@@ -1,0 +1,26 @@
+# Telegram Music Bot - Systemd Service
+# Copy to /etc/systemd/system/tg-music-bot.service
+# Then run: sudo systemctl daemon-reload && sudo systemctl enable --now tg-music-bot
+
+[Unit]
+Description=Telegram Music Bot
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/data/workspace/tg-music-bot
+ExecStart=/data/workspace/tg-music-bot/run.sh
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Environment variables (alternative to config.py)
+Environment=API_ID=1234567
+Environment=API_HASH=your_api_hash_here
+Environment=BOT_TOKEN=123456789:ABC-DEF...
+Environment=ADMIN_IDS=123456789,987654321
+
+[Install]
+WantedBy=multi-user.target
