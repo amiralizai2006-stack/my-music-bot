@@ -17,10 +17,9 @@ import yt_dlp
 
 from config import config
 from optional_deps import (
-    VOICE_CHAT_AVAILABLE, AudioPiped, PyTgCalls, logger as _logger
+    VOICE_CHAT_AVAILABLE, AudioPiped, PyTgCalls
 )
 
-# Use optional_deps logger
 logger = logging.getLogger(__name__)
 
 

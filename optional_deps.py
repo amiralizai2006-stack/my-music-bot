@@ -7,7 +7,7 @@ All voice chat related imports are wrapped in try/except and feature flags are p
 
 import sys
 import platform
-from typing import Optional, Any, Type
+from typing import Optional, Any
 
 # Platform detection
 IS_ANDROID = sys.platform == "android" or "android" in platform.platform().lower()
@@ -16,28 +16,38 @@ IS_LINUX = sys.platform.startswith("linux") and not IS_ANDROID
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
 
-# Voice chat availability
+# Voice chat availability (default to available on non-Android)
 VOICE_CHAT_AVAILABLE = not IS_ANDROID
 
 
-class _MissingDependency:
-    """Placeholder for missing dependencies."""
-    
+class _DummyType:
+    """Dummy type that works with typing but raises on actual use."""
     def __init__(self, name: str, error: Exception):
-        self.name = name
-        self.error = error
+        self._name = name
+        self._error = error
     
     def __getattr__(self, item):
+        # Only raise when actually used, not during typing inspection
         raise ImportError(
-            f"'{self.name}' is not available on this platform. "
-            f"Original error: {self.error}"
+            f"'{self._name}' is not available on this platform. "
+            f"Original error: {self._error}"
         )
     
     def __call__(self, *args, **kwargs):
         raise ImportError(
-            f"'{self.name}' is not available on this platform. "
-            f"Original error: {self.error}"
+            f"'{self._name}' is not available on this platform. "
+            f"Original error: {self._error}"
         )
+    
+    # Make it work with typing
+    def __class_getitem__(cls, item):
+        return cls
+    
+    def __instancecheck__(cls, instance):
+        return False
+    
+    def __subclasscheck__(cls, subclass):
+        return False
 
 
 # Try to import PyTgCalls
@@ -64,7 +74,7 @@ if VOICE_CHAT_AVAILABLE:
         
     except ImportError as e:
         VOICE_CHAT_AVAILABLE = False
-        _missing = _MissingDependency("pytgcalls", e)
+        _missing = _DummyType("pytgcalls", e)
         PyTgCalls = _missing
         Update = _missing
         AudioVideoPiped = _missing
