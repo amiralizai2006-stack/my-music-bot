@@ -1,17 +1,32 @@
-import asyncio
-import os
-import yt_dlp
-import logging
-from pathlib import Path
-from typing import Optional, Dict, Any
-from dataclasses import dataclass
-from config import config
+"""
+Music Downloader and Player for Telegram Music Bot.
 
+This module handles:
+- Music downloading via yt-dlp
+- Playback management via PyTgCalls (when available)
+"""
+
+import asyncio
+import logging
+import os
+from pathlib import Path
+from typing import Optional, List, Dict, Any
+from dataclasses import dataclass
+
+import yt_dlp
+
+from config import config
+from optional_deps import (
+    VOICE_CHAT_AVAILABLE, AudioPiped, PyTgCalls, logger as _logger
+)
+
+# Use optional_deps logger
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class TrackInfo:
+    """Information about a music track."""
     title: str
     duration: int
     url: str
@@ -22,6 +37,8 @@ class TrackInfo:
 
 
 class MusicDownloader:
+    """Downloads audio from various sources using yt-dlp."""
+    
     def __init__(self):
         self.downloads_dir = Path(config.downloads_dir)
         self.downloads_dir.mkdir(parents=True, exist_ok=True)
@@ -101,7 +118,7 @@ class MusicDownloader:
             logger.error(f"Error downloading {track.title}: {e}")
             return None
     
-    async def search(self, query: str, limit: int = 5) -> list[TrackInfo]:
+    async def search(self, query: str, limit: int = 5) -> List[TrackInfo]:
         """Search for tracks."""
         loop = asyncio.get_event_loop()
         try:
@@ -126,9 +143,12 @@ class MusicDownloader:
 
 
 class MusicPlayer:
-    """Wrapper for PyTgCalls playback management."""
+    """Wrapper for PyTgCalls playback management.
     
-    def __init__(self, pytgcalls_client):
+    This class is a no-op when PyTgCalls is not available (Android).
+    """
+    
+    def __init__(self, pytgcalls_client=None):
         self.client = pytgcalls_client
         self.current_track: Optional[TrackInfo] = None
         self.current_chat_id: Optional[int] = None
@@ -137,15 +157,19 @@ class MusicPlayer:
         self.is_playing: bool = False
         self.is_paused: bool = False
         self._leave_task: Optional[asyncio.Task] = None
+        self._available = VOICE_CHAT_AVAILABLE
+        
+        if not self._available:
+            logger.warning("MusicPlayer initialized but voice chat is NOT available on this platform")
     
     async def join_call(self, chat_id: int) -> bool:
         """Join voice chat."""
+        if not self._available:
+            logger.error("Voice chat not available on this platform")
+            return False
+        
         try:
-            await self.client.join_group_call(
-                chat_id,
-                # AudioVideoPiped will be set when playing
-                None
-            )
+            await self.client.join_group_call(chat_id, None)
             self.current_chat_id = chat_id
             self._cancel_leave_timer()
             return True
@@ -155,6 +179,9 @@ class MusicPlayer:
     
     async def leave_call(self, chat_id: int) -> bool:
         """Leave voice chat."""
+        if not self._available:
+            return False
+        
         try:
             await self.client.leave_group_call(chat_id)
             self.current_chat_id = None
@@ -169,18 +196,19 @@ class MusicPlayer:
     
     async def play(self, chat_id: int, track: TrackInfo) -> bool:
         """Play a track in voice chat."""
-        from pytgcalls.types import AudioVideoPiped
-        from pytgcalls.types.input_stream import AudioPiped
+        if not self._available:
+            logger.error("Voice chat not available on this platform")
+            return False
+        
+        if not track.filepath or not Path(track.filepath).exists():
+            logger.error(f"File not found: {track.filepath}")
+            return False
         
         try:
             # Join if not already in call
             if self.current_chat_id != chat_id:
                 await self.leave_call(self.current_chat_id) if self.current_chat_id else None
                 await self.join_call(chat_id)
-            
-            if not track.filepath or not Path(track.filepath).exists():
-                logger.error(f"File not found: {track.filepath}")
-                return False
             
             # Create audio stream
             audio_piped = AudioPiped(
@@ -204,6 +232,9 @@ class MusicPlayer:
     
     async def pause(self, chat_id: int) -> bool:
         """Pause playback."""
+        if not self._available:
+            return False
+        
         try:
             await self.client.pause_stream(chat_id)
             self.is_paused = True
@@ -215,6 +246,9 @@ class MusicPlayer:
     
     async def resume(self, chat_id: int) -> bool:
         """Resume playback."""
+        if not self._available:
+            return False
+        
         try:
             await self.client.resume_stream(chat_id)
             self.is_paused = False
@@ -226,6 +260,9 @@ class MusicPlayer:
     
     async def stop(self, chat_id: int) -> bool:
         """Stop playback and leave call."""
+        if not self._available:
+            return False
+        
         try:
             await self.client.leave_group_call(chat_id)
             self.current_track = None
@@ -240,6 +277,9 @@ class MusicPlayer:
     
     async def set_volume(self, chat_id: int, volume: int) -> bool:
         """Set volume (0-200)."""
+        if not self._available:
+            return False
+        
         try:
             volume = max(0, min(200, volume))
             await self.client.change_volume_call(chat_id, volume)
@@ -264,8 +304,9 @@ class MusicPlayer:
         if self.current_chat_id == chat_id and not self.is_playing:
             await self.leave_call(chat_id)
     
-    def get_status(self) -> dict:
+    def get_status(self) -> Dict[str, Any]:
         return {
+            "available": self._available,
             "is_playing": self.is_playing,
             "is_paused": self.is_paused,
             "current_track": self.current_track.title if self.current_track else None,
@@ -273,6 +314,12 @@ class MusicPlayer:
             "volume": self.volume,
             "repeat_mode": self.repeat_mode
         }
+    
+    def is_voice_chat_available(self) -> bool:
+        """Check if voice chat functionality is available."""
+        return self._available
 
 
+# Global instances
 downloader = MusicDownloader()
+# player will be initialized in main.py after pytgcalls client is created

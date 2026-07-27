@@ -1,0 +1,9 @@
+# Linux requirements - includes voice chat dependencies
+# Install with: pip install -r requirements-base.txt -r requirements-linux.txt
+
+# Voice chat (PyTgCalls + tgcalls native library)
+# Note: tgcalls is a native library, may need system dependencies
+pytgcalls>=4.0
+
+# System monitoring (optional)
+psutil>=5.9

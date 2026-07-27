@@ -1,0 +1,4 @@
+# Termux/Android requirements - base only (no voice chat)
+# Install with: pip install -r requirements-base.txt -r requirements-termux.txt
+# Note: pytgcalls and tgcalls are NOT included as they don't have Android wheels
+# psutil is also not available on Android
