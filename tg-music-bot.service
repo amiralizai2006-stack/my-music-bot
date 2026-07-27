@@ -1,0 +1,19 @@
+[Unit]
+Description=Telegram Music Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/data/workspace/tg-music-bot
+ExecStart=/data/workspace/tg-music-bot/venv/bin/python main.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Environment variables (or use config.py)
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
