@@ -1,6 +1,16 @@
 import os
+import sys
+import platform
 from pathlib import Path
 from typing import List
+
+try:
+    from optional_deps import IS_ANDROID, IS_TERMUX, VOICE_CHAT_AVAILABLE
+except ImportError:
+    IS_ANDROID = sys.platform == "android" or "android" in platform.platform().lower()
+    IS_TERMUX = "com.termux" in platform.platform().lower()
+    VOICE_CHAT_AVAILABLE = not IS_ANDROID
+
 
 class Config:
     api_id: int = int(os.getenv("API_ID", "0"))
@@ -24,13 +34,19 @@ class Config:
     ytdl_format: str = os.getenv("YTDL_FORMAT", "bestaudio/best")
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
     log_file: str = os.getenv("LOG_FILE", "logs/music_bot.log")
-    enable_voice_chat: bool = os.getenv("ENABLE_VOICE_CHAT", "true").lower() == "true"
+
+    enable_voice_chat: bool = os.getenv(
+        "ENABLE_VOICE_CHAT",
+        "true" if VOICE_CHAT_AVAILABLE else "false"
+    ).lower() == "true"
+
 
 Path(Config().downloads_dir).mkdir(parents=True, exist_ok=True)
 Path(Config().db_path).parent.mkdir(parents=True, exist_ok=True)
 Path(Config().log_file).parent.mkdir(parents=True, exist_ok=True)
 
 config = Config()
+
 
 def validate_config() -> List[str]:
     errors = []
@@ -45,6 +61,7 @@ def validate_config() -> List[str]:
         errors.append("BOT_TOKEN is required")
 
     return errors
+
 
 API_ID = config.api_id
 API_HASH = config.api_hash
