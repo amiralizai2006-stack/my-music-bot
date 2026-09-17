@@ -2,21 +2,24 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Optional
 
 from pyrogram import Client
+
 
 logger = logging.getLogger("SILENT.assistant")
 
 
 # ============================================================
-# ENV HELPERS
+# ENVIRONMENT HELPERS
 # ============================================================
 
 def _get_env(name: str) -> str:
     """
-    خواندن مقدار Secret بدون نمایش مقدار آن.
+    Read a required secret from environment variables.
+
+    Secret values are never written to logs.
     """
+
     value = os.getenv(name, "").strip()
 
     if not value:
@@ -28,7 +31,7 @@ def _get_env(name: str) -> str:
 
 
 # ============================================================
-# ASSISTANT
+# CREATE ASSISTANT
 # ============================================================
 
 def create_assistant(
@@ -36,42 +39,52 @@ def create_assistant(
     api_hash: str,
 ) -> Client:
     """
-    ساخت کلاینت اکانت دستیار تلگرام.
+    Create the Telegram user-account client used as
+    the voice-chat assistant.
 
-    اطلاعات حساس فقط از Environment Variables خوانده می‌شوند:
+    Required secret:
 
         ASSISTANT_SESSION
 
-    Session String هیچ‌وقت در لاگ چاپ نمی‌شود.
+    The session string is never printed or logged.
     """
 
     # --------------------------------------------------------
-    # Validate API credentials
+    # API ID
     # --------------------------------------------------------
 
     try:
+
         api_id = int(api_id)
+
     except (TypeError, ValueError) as exc:
+
         raise RuntimeError(
             "API_ID is invalid"
         ) from exc
+
+    if api_id <= 0:
+
+        raise RuntimeError(
+            "API_ID must be greater than zero"
+        )
+
+    # --------------------------------------------------------
+    # API HASH
+    # --------------------------------------------------------
 
     api_hash = str(
         api_hash or ""
     ).strip()
 
-    if api_id <= 0:
-        raise RuntimeError(
-            "API_ID must be greater than zero"
-        )
-
     if not api_hash:
+
         raise RuntimeError(
             "API_HASH is not configured"
         )
 
     # --------------------------------------------------------
-    # Read assistant session
+    # ASSISTANT SESSION
     # --------------------------------------------------------
 
     session_string = _get_env(
@@ -79,7 +92,7 @@ def create_assistant(
     )
 
     # --------------------------------------------------------
-    # Create Pyrogram client
+    # PYROGRAM CLIENT
     # --------------------------------------------------------
 
     try:
@@ -94,7 +107,9 @@ def create_assistant(
 
     except Exception as exc:
 
-        # Never include session_string in the error.
+        # IMPORTANT:
+        # Never include the session string in an error message.
+
         logger.exception(
             "❌ Failed to create assistant client"
         )
@@ -104,7 +119,7 @@ def create_assistant(
         ) from exc
 
     # --------------------------------------------------------
-    # Safe log
+    # SAFE LOGGING
     # --------------------------------------------------------
 
     logger.info(
@@ -115,20 +130,21 @@ def create_assistant(
 
 
 # ============================================================
-# OPTIONAL VALIDATION
+# SESSION CHECK
 # ============================================================
 
 def assistant_session_configured() -> bool:
     """
-    بررسی می‌کند که ASSISTANT_SESSION وجود دارد یا نه.
+    Check whether ASSISTANT_SESSION exists.
 
-    مقدار Session را برنمی‌گرداند.
+    The actual session value is never returned.
     """
 
-    value: Optional[str] = os.getenv(
-        "ASSISTANT_SESSION"
+    value = os.getenv(
+        "ASSISTANT_SESSION",
+        "",
     )
 
     return bool(
-        value and value.strip()
+        value.strip()
     )
