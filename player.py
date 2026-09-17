@@ -1,1155 +1,1153 @@
-from __future__ import annotations
+from future import annotations
 
 import asyncio
 import logging
+import re
+import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Any
+from urllib.parse import urlparse
 
+import yt_dlp
+
+try:
 from pytgcalls.types import MediaStream
+except Exception:
+MediaStream = None
 
 logger = logging.getLogger("SILENT.player")
 
+============================================================
 
-# ============================================================
-# TRACK
-# ============================================================
+PATHS
+
+============================================================
+
+BASE_DIR = Path(file).resolve().parent
+DOWNLOAD_DIR = BASE_DIR / "downloads"
+DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+============================================================
+
+TRACK
+
+============================================================
 
 @dataclass
 class TrackInfo:
-    title: str
-    performer: str = ""
-    artist: str = ""
-    duration: int = 0
+title: str
+performer: str = ""
+artist: str = ""
+duration: int = 0
+url: str = ""
+source_url: str = ""
+file_path: str = ""
+thumbnail: str = ""
 
-    url: str = ""
-    webpage_url: str = ""
-    thumbnail: str = ""
-    uploader: str = ""
+def display_name(self) -> str:
+    if self.performer:
+        return f"{self.title} — {self.performer}"
+    if self.artist:
+        return f"{self.title} — {self.artist}"
+    return self.title
 
-    filepath: str = ""
+============================================================
 
-    requested_by: int = 0
-    requested_name: str = ""
+YOUTUBE / AUDIO DOWNLOADER
 
-    def __post_init__(self):
-        self.title = str(self.title or "موزیک").strip() or "موزیک"
-
-        self.performer = str(self.performer or "").strip()
-        self.artist = str(self.artist or "").strip()
-
-        if not self.performer:
-            self.performer = self.artist
-
-        if not self.artist:
-            self.artist = self.performer
-
-        try:
-            self.duration = max(0, int(self.duration or 0))
-        except (TypeError, ValueError):
-            self.duration = 0
-
-    @property
-    def display_artist(self) -> str:
-        return (
-            self.performer
-            or self.artist
-            or self.uploader
-            or "ناشناخته"
-        )
-
-    @property
-    def duration_text(self) -> str:
-        seconds = max(0, int(self.duration or 0))
-
-        minutes, seconds = divmod(seconds, 60)
-        hours, minutes = divmod(minutes, 60)
-
-        if hours:
-            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-
-        return f"{minutes:02d}:{seconds:02d}"
-
-
-# ============================================================
-# DOWNLOADER
-# ============================================================
+============================================================
 
 class MusicDownloader:
 
-    YOUTUBE_CLIENTS = (
-        ["android_vr"],
-        ["web_safari"],
-        ["web_music"],
-        ["tv_simply"],
-        ["web"],
-    )
-
-    USER_AGENT = (
-        "Mozilla/5.0 "
-        "(X11; Linux x86_64) "
-        "AppleWebKit/537.36 "
-        "(KHTML, like Gecko) "
-        "Chrome/131.0 Safari/537.36"
-    )
-
-    def __init__(self, download_dir: str = "downloads"):
-        self.download_dir = Path(download_dir)
-        self.download_dir.mkdir(parents=True, exist_ok=True)
-
-    # ========================================================
-    # SEARCH
-    # ========================================================
-
-    async def search(
-        self,
-        query: str,
-        limit: int = 1,
-    ) -> list[TrackInfo]:
-
-        query = str(query or "").strip()
-
-        if not query:
-            return []
-
-        limit = max(1, min(int(limit), 10))
-
-        return await asyncio.to_thread(
-            self._search_sync,
-            query,
-            limit,
-        )
-
-    def _search_sync(
-        self,
-        query: str,
-        limit: int,
-    ) -> list[TrackInfo]:
-
-        import yt_dlp
-
-        if query.startswith(("http://", "https://")):
-            return self._extract_url(
-                yt_dlp,
-                query,
-                limit,
-            )
-
-        # اول یوتیوب
-        youtube_source = f"ytsearch{limit}:{query}"
-
-        try:
-            results = self._youtube_search(
-                yt_dlp,
-                youtube_source,
-                limit,
-            )
-
-            if results:
-                logger.info(
-                    "SEARCH OK | youtube | %s",
-                    query,
-                )
-                return results
-
-        except Exception:
-            logger.exception(
-                "YOUTUBE SEARCH ERROR | %s",
-                query,
-            )
-
-        # بعد SoundCloud
-        soundcloud_source = f"scsearch{limit}:{query}"
-
-        try:
-            results = self._generic_search(
-                yt_dlp,
-                soundcloud_source,
-                limit,
-            )
-
-            if results:
-                logger.info(
-                    "SEARCH OK | soundcloud | %s",
-                    query,
-                )
-                return results
-
-        except Exception:
-            logger.exception(
-                "SOUNDCLOUD SEARCH ERROR | %s",
-                query,
-            )
-
-        logger.warning(
-            "NO SEARCH RESULT | %s",
-            query,
-        )
-
-        return []
-
-    # ========================================================
-    # GENERIC SEARCH
-    # ========================================================
-
-    def _generic_search(
-        self,
-        yt_dlp,
-        source: str,
-        limit: int,
-    ) -> list[TrackInfo]:
-
-        options = {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-            "noplaylist": True,
-            "extract_flat": False,
-        }
-
-        with yt_dlp.YoutubeDL(options) as ydl:
-            info = ydl.extract_info(
-                source,
-                download=False,
-            )
-
-        return self._info_to_tracks(
-            info,
-            limit,
-        )
-
-    # ========================================================
-    # YOUTUBE SEARCH
-    # ========================================================
-
-    def _youtube_search(
-        self,
-        yt_dlp,
-        source: str,
-        limit: int,
-    ) -> list[TrackInfo]:
-
-        for client in self.YOUTUBE_CLIENTS:
-
-            options = {
-                "quiet": True,
-                "no_warnings": True,
-                "skip_download": True,
-                "noplaylist": True,
-                "extract_flat": False,
-
-                "extractor_args": {
-                    "youtube": {
-                        "player_client": client,
-                    }
-                },
-
-                "http_headers": {
-                    "User-Agent": self.USER_AGENT,
-                },
-            }
-
-            try:
-
-                with yt_dlp.YoutubeDL(options) as ydl:
-
-                    info = ydl.extract_info(
-                        source,
-                        download=False,
-                    )
-
-                results = self._info_to_tracks(
-                    info,
-                    limit,
-                )
-
-                if results:
-                    return results
-
-            except Exception as exc:
-
-                logger.warning(
-                    "YOUTUBE SEARCH FAILED | client=%s | %s",
-                    client,
-                    exc,
-                )
-
-        return []
-
-    # ========================================================
-    # DIRECT URL
-    # ========================================================
-
-    def _extract_url(
-        self,
-        yt_dlp,
-        source: str,
-        limit: int,
-    ) -> list[TrackInfo]:
-
-        is_youtube = (
-            "youtube.com" in source
-            or "youtu.be" in source
-        )
-
-        if is_youtube:
-
-            for client in self.YOUTUBE_CLIENTS:
-
-                options = {
-                    "quiet": True,
-                    "no_warnings": True,
-                    "skip_download": True,
-                    "noplaylist": True,
-                    "extract_flat": False,
-
-                    "extractor_args": {
-                        "youtube": {
-                            "player_client": client
-                        }
-                    },
-
-                    "http_headers": {
-                        "User-Agent": self.USER_AGENT
-                    },
-                }
-
-                try:
-
-                    with yt_dlp.YoutubeDL(options) as ydl:
-
-                        info = ydl.extract_info(
-                            source,
-                            download=False,
-                        )
-
-                    results = self._info_to_tracks(
-                        info,
-                        limit,
-                    )
-
-                    if results:
-                        return results
-
-                except Exception as exc:
-
-                    logger.warning(
-                        "DIRECT YOUTUBE FAILED | client=%s | %s",
-                        client,
-                        exc,
-                    )
-
-            return []
-
-        options = {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-            "noplaylist": True,
-            "extract_flat": False,
-        }
-
-        try:
-
-            with yt_dlp.YoutubeDL(options) as ydl:
-
-                info = ydl.extract_info(
-                    source,
-                    download=False,
-                )
-
-            return self._info_to_tracks(
-                info,
-                limit,
-            )
-
-        except Exception as exc:
-
-            logger.warning(
-                "DIRECT URL FAILED | %s",
-                exc,
-            )
-
-            return []
-
-    # ========================================================
-    # INFO -> TRACKS
-    # ========================================================
-
-    def _info_to_tracks(
-        self,
-        info: Optional[dict],
-        limit: int,
-    ) -> list[TrackInfo]:
-
-        if not info:
-            return []
-
-        entries = info.get("entries")
-
-        if entries is None:
-            entries = [info]
-        else:
-            entries = [
-                item for item in entries
-                if item
-            ]
-
-        results: list[TrackInfo] = []
-
-        for item in entries[:limit]:
-
-            artist = (
-                item.get("artist")
-                or item.get("creator")
-                or item.get("uploader")
-                or item.get("channel")
-                or ""
-            )
-
-            results.append(
-                TrackInfo(
-                    title=item.get("title", "موزیک"),
-
-                    performer=artist,
-                    artist=artist,
-
-                    duration=int(
-                        item.get("duration", 0) or 0
-                    ),
-
-                    url=(
-                        item.get("url", "")
-                        or ""
-                    ),
-
-                    webpage_url=(
-                        item.get("webpage_url", "")
-                        or item.get("original_url", "")
-                        or ""
-                    ),
-
-                    thumbnail=(
-                        item.get("thumbnail", "")
-                        or ""
-                    ),
-
-                    uploader=(
-                        item.get("uploader", "")
-                        or item.get("channel", "")
-                        or ""
-                    ),
-                )
-            )
-
-        return results
-
-    # ========================================================
-    # DOWNLOAD
-    # ========================================================
-
-    async def download(
-        self,
-        track: TrackInfo,
-    ) -> Optional[TrackInfo]:
-
-        source = (
-            track.webpage_url
-            or track.url
-        )
-
-        if not source:
-            logger.error(
-                "DOWNLOAD FAILED | no source"
-            )
-            return None
-
-        return await asyncio.to_thread(
-            self._download_sync,
-            source,
-            track,
-        )
-
-    def _download_sync(
-        self,
-        source: str,
-        track: TrackInfo,
-    ) -> Optional[TrackInfo]:
-
-        import yt_dlp
-
-        is_youtube = (
-            "youtube.com" in source
-            or "youtu.be" in source
-        )
-
-        clients = (
-            self.YOUTUBE_CLIENTS
-            if is_youtube
-            else (None,)
-        )
-
-        for client in clients:
-
-            output = str(
-                self.download_dir
-                / "%(id)s.%(ext)s"
-            )
-
-            options = {
-                "format": (
-                    "bestaudio[ext=m4a]/"
-                    "bestaudio[ext=webm]/"
-                    "bestaudio/best"
-                ),
-
-                "outtmpl": output,
-
-                "noplaylist": True,
-                "quiet": True,
-                "no_warnings": True,
-                "overwrites": False,
-
-                "retries": 3,
-                "fragment_retries": 3,
-                "continuedl": True,
-
-                "socket_timeout": 30,
-
-                "http_headers": {
-                    "User-Agent": self.USER_AGENT
-                },
-            }
-
-            if client:
-
-                options["extractor_args"] = {
-                    "youtube": {
-                        "player_client": client
-                    }
-                }
-
-            try:
-
-                logger.info(
-                    "DOWNLOAD | source=%s | client=%s",
-                    source,
-                    client,
-                )
-
-                with yt_dlp.YoutubeDL(options) as ydl:
-
-                    info = ydl.extract_info(
-                        source,
-                        download=True,
-                    )
-
-                    if not info:
-                        continue
-
-                    entries = info.get("entries")
-
-                    if entries:
-
-                        entries = [
-                            item for item in entries
-                            if item
-                        ]
-
-                        if not entries:
-                            continue
-
-                        info = entries[0]
-
-                    filepath = None
-
-                    requested = (
-                        info.get(
-                            "requested_downloads"
-                        )
-                        or []
-                    )
-
-                    for item in requested:
-
-                        path = item.get("filepath")
-
-                        if path:
-                            filepath = path
-                            break
-
-                    if not filepath:
-
-                        try:
-                            filepath = ydl.prepare_filename(info)
-                        except Exception:
-                            filepath = None
-
-                    if filepath:
-
-                        path = Path(filepath)
-
-                        if self._valid_file(path):
-
-                            self._update_track(
-                                track,
-                                info,
-                                path,
-                            )
-
-                            return track
-
-                    newest = self._newest_file()
-
-                    if newest:
-
-                        self._update_track(
-                            track,
-                            info,
-                            newest,
-                        )
-
-                        return track
-
-            except Exception as exc:
-
-                logger.warning(
-                    "DOWNLOAD FAILED | client=%s | %s",
-                    client,
-                    exc,
-                )
-
-        logger.error(
-            "ALL DOWNLOAD METHODS FAILED | %s",
-            source,
-        )
-
+YDL_SEARCH_OPTIONS = {
+    "quiet": True,
+    "no_warnings": True,
+    "skip_download": True,
+    "extract_flat": False,
+    "noplaylist": True,
+    "default_search": "ytsearch",
+}
+
+YDL_INFO_OPTIONS = {
+    "quiet": True,
+    "no_warnings": True,
+    "skip_download": True,
+    "noplaylist": True,
+}
+
+YDL_DOWNLOAD_OPTIONS = {
+    "format": "bestaudio/best",
+    "outtmpl": str(DOWNLOAD_DIR / "%(id)s.%(ext)s"),
+    "noplaylist": True,
+    "quiet": True,
+    "no_warnings": True,
+    "restrictfilenames": True,
+    "overwrites": False,
+    "continuedl": True,
+}
+
+def __init__(self):
+    self._lock = asyncio.Lock()
+
+@staticmethod
+def _is_url(text: str) -> bool:
+    try:
+        parsed = urlparse(text.strip())
+        return parsed.scheme in ("http", "https")
+    except Exception:
+        return False
+
+@staticmethod
+def _clean_query(query: str) -> str:
+    query = re.sub(r"\s+", " ", query or "").strip()
+    return query
+
+@staticmethod
+def _safe_filename(name: str) -> str:
+    name = re.sub(r'[\\/:*?"<>|]+', "_", name)
+    name = re.sub(r"\s+", " ", name).strip()
+    return name[:120] or "audio"
+
+def _search_sync(self, query: str) -> Optional[dict]:
+    query = self._clean_query(query)
+
+    if not query:
         return None
 
-    # ========================================================
-    # FILE HELPERS
-    # ========================================================
+    search_query = (
+        query
+        if self._is_url(query)
+        else f"ytsearch1:{query}"
+    )
 
-    @staticmethod
-    def _valid_file(
-        path: Path,
-    ) -> bool:
+    options = dict(self.YDL_SEARCH_OPTIONS)
 
-        try:
-            return (
-                path.exists()
-                and path.is_file()
-                and path.stat().st_size > 1024
-            )
-        except OSError:
-            return False
+    with yt_dlp.YoutubeDL(options) as ydl:
+        info = ydl.extract_info(
+            search_query,
+            download=False,
+        )
 
-    def _newest_file(self) -> Optional[Path]:
+    if not info:
+        return None
 
-        try:
+    if "entries" in info:
+        entries = [
+            item for item in info.get("entries", [])
+            if item
+        ]
 
-            files = [
-                path
-                for path in self.download_dir.iterdir()
-                if self._valid_file(path)
-            ]
-
-        except OSError:
+        if not entries:
             return None
 
-        if not files:
-            return None
+        return entries[0]
 
-        return max(
-            files,
-            key=lambda p: p.stat().st_mtime,
+    return info
+
+def _download_sync(self, info: dict) -> Optional[Path]:
+    video_id = (
+        str(info.get("id"))
+        if info.get("id")
+        else ""
+    )
+
+    title = (
+        str(info.get("title"))
+        if info.get("title")
+        else "audio"
+    )
+
+    if not video_id:
+        return None
+
+    # ----------------------------------------------------
+    # Existing file
+    # ----------------------------------------------------
+
+    existing = list(
+        DOWNLOAD_DIR.glob(
+            f"{self._safe_filename(video_id)}.*"
         )
+    )
 
-    # ========================================================
-    # UPDATE TRACK
-    # ========================================================
+    if existing:
+        for item in existing:
+            if item.is_file():
+                return item
 
-    def _update_track(
-        self,
-        track: TrackInfo,
-        info: dict,
-        path: Path,
-    ):
+    # ----------------------------------------------------
+    # Download
+    # ----------------------------------------------------
 
-        artist = (
-            info.get("artist")
-            or info.get("creator")
-            or info.get("uploader")
-            or info.get("channel")
-            or track.performer
-            or ""
-        )
+    options = dict(self.YDL_DOWNLOAD_OPTIONS)
 
-        track.title = (
-            info.get("title")
-            or track.title
-            or "موزیک"
-        )
+    with yt_dlp.YoutubeDL(options) as ydl:
 
-        track.performer = artist
-        track.artist = artist
-
-        track.duration = int(
-            info.get("duration")
-            or track.duration
-            or 0
-        )
-
-        track.url = (
-            info.get("url")
-            or track.url
-            or ""
-        )
-
-        track.webpage_url = (
+        result = ydl.extract_info(
             info.get("webpage_url")
             or info.get("original_url")
-            or track.webpage_url
-            or ""
+            or info.get("url"),
+            download=True,
         )
 
-        track.thumbnail = (
-            info.get("thumbnail")
-            or track.thumbnail
-            or ""
+        if not result:
+            return None
+
+        prepared = ydl.prepare_filename(result)
+
+    prepared_path = Path(prepared)
+
+    if prepared_path.exists():
+        return prepared_path
+
+    # yt-dlp may return a different extension after post-processing.
+    candidates = list(
+        DOWNLOAD_DIR.glob(
+            f"{self._safe_filename(video_id)}.*"
+        )
+    )
+
+    if candidates:
+        candidates.sort(
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        return candidates[0]
+
+    # Fallback: locate by video id.
+    candidates = [
+        p for p in DOWNLOAD_DIR.iterdir()
+        if p.is_file()
+        and video_id in p.name
+    ]
+
+    if candidates:
+        candidates.sort(
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        return candidates[0]
+
+    logger.warning(
+        "Downloaded file not found for %s (%s)",
+        video_id,
+        title,
+    )
+
+    return None
+
+async def search(self, query: str, limit: int = 1):
+    """
+    Search YouTube.
+
+    Returns a list of TrackInfo.
+    """
+
+    query = self._clean_query(query)
+
+    if not query:
+        return []
+
+    try:
+
+        info = await asyncio.to_thread(
+            self._search_sync,
+            query,
         )
 
-        track.uploader = (
-            info.get("uploader")
-            or info.get("channel")
-            or track.uploader
-            or ""
+    except Exception:
+
+        logger.exception(
+            "YouTube search failed: %s",
+            query,
         )
 
-        track.filepath = str(
-            path.resolve()
+        return []
+
+    if not info:
+        return []
+
+    return [
+        self._track_from_info(info)
+    ]
+
+def _track_from_info(
+    self,
+    info: dict,
+) -> TrackInfo:
+
+    title = (
+        str(info.get("title"))
+        if info.get("title")
+        else "Unknown"
+    )
+
+    performer = (
+        str(info.get("uploader"))
+        if info.get("uploader")
+        else ""
+    )
+
+    artist = (
+        str(info.get("artist"))
+        if info.get("artist")
+        else performer
+    )
+
+    duration = info.get("duration") or 0
+
+    try:
+        duration = int(duration)
+    except Exception:
+        duration = 0
+
+    webpage_url = (
+        str(info.get("webpage_url"))
+        if info.get("webpage_url")
+        else ""
+    )
+
+    if not webpage_url:
+        webpage_url = (
+            str(info.get("original_url"))
+            if info.get("original_url")
+            else ""
         )
 
-    # ========================================================
-    # PREPARE
-    # ========================================================
+    thumbnail = (
+        str(info.get("thumbnail"))
+        if info.get("thumbnail")
+        else ""
+    )
 
-    async def prepare(
-        self,
-        track: TrackInfo,
-    ) -> Optional[TrackInfo]:
+    return TrackInfo(
+        title=title,
+        performer=performer,
+        artist=artist,
+        duration=duration,
+        url=webpage_url,
+        source_url=webpage_url,
+        thumbnail=thumbnail,
+    )
 
-        if track.filepath:
+async def prepare(
+    self,
+    track: TrackInfo,
+) -> Optional[TrackInfo]:
+    """
+    Download a TrackInfo and attach the local file path.
+    """
 
-            path = Path(track.filepath)
+    async with self._lock:
 
-            if self._valid_file(path):
-                return track
+        try:
 
-        return await self.download(track)
+            info = await asyncio.to_thread(
+                self._search_sync,
+                track.source_url or track.url,
+            )
 
+        except Exception:
 
-# ============================================================
-# MUSIC PLAYER
-# ============================================================
+            logger.exception(
+                "Could not resolve source: %s",
+                track.source_url or track.url,
+            )
+
+            return None
+
+        if not info:
+            return None
+
+        try:
+
+            file_path = await asyncio.to_thread(
+                self._download_sync,
+                info,
+            )
+
+        except Exception:
+
+            logger.exception(
+                "Audio download failed: %s",
+                track.title,
+            )
+
+            return None
+
+        if not file_path:
+            return None
+
+        resolved = self._track_from_info(info)
+
+        resolved.file_path = str(file_path)
+
+        return resolved
+
+============================================================
+
+PLAYER
+
+============================================================
 
 class MusicPlayer:
 
-    def __init__(
-        self,
-        app: Any = None,
-        call: Any = None,
-        download_dir: str = "downloads",
-    ):
+def __init__(
+    self,
+    call: Any = None,
+):
+    self.call = call
+    self.downloader = MusicDownloader()
 
-        self.app = app
-        self.call = call
+    # ----------------------------------------------------
+    # Current tracks by chat
+    # ----------------------------------------------------
 
-        self.downloader = MusicDownloader(
-            download_dir
+    self.current: dict[int, TrackInfo] = {}
+
+    # ----------------------------------------------------
+    # Queue by chat
+    # ----------------------------------------------------
+
+    self.queues: dict[int, list[TrackInfo]] = {}
+
+    # ----------------------------------------------------
+    # Playback history
+    # ----------------------------------------------------
+
+    self.history: dict[int, list[TrackInfo]] = {}
+
+    # ----------------------------------------------------
+    # Pause state
+    # ----------------------------------------------------
+
+    self.paused: dict[int, bool] = {}
+
+    # ----------------------------------------------------
+    # Playback timing
+    # ----------------------------------------------------
+
+    self.started_at: dict[int, float] = {}
+    self.paused_at: dict[int, float] = {}
+    self.offset: dict[int, float] = {}
+
+    # ----------------------------------------------------
+    # Per-chat locks
+    # ----------------------------------------------------
+
+    self._locks: dict[int, asyncio.Lock] = {}
+
+    # ----------------------------------------------------
+    # Prevent duplicate automatic next calls
+    # ----------------------------------------------------
+
+    self._advancing: set[int] = set()
+
+    # ----------------------------------------------------
+    # Active voice chats
+    # ----------------------------------------------------
+
+    self.active_chat_ids: set[int] = set()
+
+# ========================================================
+# LOCK
+# ========================================================
+
+def _get_lock(self, chat_id: int) -> asyncio.Lock:
+    chat_id = int(chat_id)
+
+    if chat_id not in self._locks:
+        self._locks[chat_id] = asyncio.Lock()
+
+    return self._locks[chat_id]
+
+# ========================================================
+# CALL HELPERS
+# ========================================================
+
+async def _call_play(
+    self,
+    chat_id: int,
+    file_path: str,
+):
+    if not self.call:
+        raise RuntimeError(
+            "PyTgCalls is not available"
         )
 
-        # آهنگ در حال پخش
-        self.current: dict[int, TrackInfo] = {}
+    if not MediaStream:
+        raise RuntimeError(
+            "MediaStream is unavailable"
+        )
 
-        # صف آهنگ‌ها
-        self.queues: dict[int, list[TrackInfo]] = {}
+    stream = MediaStream(
+        file_path,
+        video_flags=MediaStream.Flags.IGNORE,
+    )
 
-        # تاریخچه
-        self.history: dict[int, list[TrackInfo]] = {}
+    result = self.call.play(
+        int(chat_id),
+        stream,
+    )
 
-        self.paused: set[int] = set()
+    if asyncio.iscoroutine(result):
+        await result
 
-        self.started_at: dict[int, float] = {}
-        self.offset: dict[int, int] = {}
+async def _call_leave(
+    self,
+    chat_id: int,
+):
+    if not self.call:
+        return
 
-        self.volume: dict[int, int] = {}
+    leave = getattr(
+        self.call,
+        "leave_call",
+        None,
+    )
 
-        self.locks: dict[int, asyncio.Lock] = {}
+    if not callable(leave):
+        return
 
-    # ========================================================
-    # LOCK
-    # ========================================================
+    try:
 
-    def _lock(
-        self,
-        chat_id: int,
-    ) -> asyncio.Lock:
+        result = leave(
+            int(chat_id)
+        )
 
-        return self.locks.setdefault(
+        if asyncio.iscoroutine(result):
+            await result
+
+    except Exception:
+
+        logger.exception(
+            "Could not leave call %s",
             chat_id,
-            asyncio.Lock(),
         )
 
-    # ========================================================
-    # QUEUE
-    # ========================================================
+# ========================================================
+# DOWNLOAD / RESOLVE
+# ========================================================
 
-    def _queue(
-        self,
-        chat_id: int,
-    ) -> list[TrackInfo]:
+async def _prepare_track(
+    self,
+    track: TrackInfo,
+) -> Optional[TrackInfo]:
 
-        return self.queues.setdefault(
-            chat_id,
-            [],
-        )
+    if track.file_path:
 
-    # ========================================================
-    # INTERNAL STREAM
-    # ========================================================
+        path = Path(track.file_path)
 
-    async def _play_file(
-        self,
-        chat_id: int,
-        filepath: str,
-    ) -> bool:
+        if path.exists() and path.is_file():
+            return track
 
-        if self.call is None:
-            return False
+    return await self.downloader.prepare(
+        track
+    )
 
-        path = Path(filepath).resolve()
+async def resolve(
+    self,
+    query: str,
+) -> Optional[TrackInfo]:
+    """
+    Resolve a name or YouTube URL.
+    """
 
-        if not self.downloader._valid_file(path):
-            return False
+    query = str(query or "").strip()
 
-        stream = MediaStream(
-            str(path),
-            video_flags=MediaStream.Flags.IGNORE,
-        )
+    if not query:
+        return None
 
-        await self.call.play(
-            chat_id,
-            stream,
-        )
+    results = await self.downloader.search(
+        query,
+        limit=1,
+    )
 
-        return True
+    if not results:
+        return None
 
-    # ========================================================
-    # PLAY TRACK DIRECTLY
-    # ========================================================
+    return results[0]
 
-    async def play_track(
-        self,
-        chat_id: int,
-        track: TrackInfo,
-        *,
-        save_history: bool = True,
-    ) -> bool:
+# ========================================================
+# PLAY FIRST / ADD TO QUEUE
+# ========================================================
 
-        if self.call is None:
-            logger.error(
-                "PLAY FAILED | PyTgCalls unavailable"
-            )
-            return False
+async def play(
+    self,
+    chat_id: int,
+    track: TrackInfo,
+) -> dict:
 
-        if not track:
-            return False
+    chat_id = int(chat_id)
 
-        async with self._lock(chat_id):
+    async with self._get_lock(chat_id):
 
-            try:
+        # ------------------------------------------------
+        # NOTHING PLAYING
+        # ------------------------------------------------
 
-                prepared = await self.downloader.prepare(
-                    track
-                )
+        if chat_id not in self.current:
 
-                if not prepared:
-                    logger.error(
-                        "PLAY FAILED | prepare returned None"
-                    )
-                    return False
-
-                filepath = Path(
-                    prepared.filepath
-                ).resolve()
-
-                if not self.downloader._valid_file(
-                    filepath
-                ):
-                    logger.error(
-                        "PLAY FAILED | invalid file=%s",
-                        filepath,
-                    )
-                    return False
-
-                prepared.filepath = str(filepath)
-
-                old = self.current.get(chat_id)
-
-                # ذخیره آهنگ قبلی در تاریخچه
-                if (
-                    old is not None
-                    and save_history
-                    and old is not prepared
-                ):
-
-                    history = self.history.setdefault(
-                        chat_id,
-                        [],
-                    )
-
-                    history.append(old)
-
-                    # فقط 20 آهنگ آخر
-                    if len(history) > 20:
-                        del history[:-20]
-
-                # پخش آهنگ جدید
-                if not await self._play_file(
-                    chat_id,
-                    prepared.filepath,
-                ):
-                    return False
-
-                self.current[chat_id] = prepared
-
-                self.started_at[chat_id] = time.monotonic()
-                self.offset[chat_id] = 0
-
-                self.paused.discard(chat_id)
-
-                logger.info(
-                    "🟢 NOW PLAYING | chat=%s | title=%s | artist=%s",
-                    chat_id,
-                    prepared.title,
-                    prepared.display_artist,
-                )
-
-                return True
-
-            except Exception:
-                logger.exception(
-                    "PLAY ERROR | chat=%s | title=%s",
-                    chat_id,
-                    getattr(
-                        track,
-                        "title",
-                        "unknown",
-                    ),
-                )
-
-                return False
-
-    # ========================================================
-    # PLAY
-    # ========================================================
-
-    async def play(
-        self,
-        chat_id: int,
-        track: TrackInfo,
-    ) -> bool:
-
-        if not track:
-            return False
-
-        # اگر آهنگی در حال پخش است:
-        # آهنگ جدید را قطع نمی‌کنیم.
-        # فقط وارد صف می‌شود.
-        if chat_id in self.current:
-
-            position = await self.add_to_queue(
+            return await self._start_track_locked(
                 chat_id,
                 track,
             )
 
-            return position > 0
+        # ------------------------------------------------
+        # SOMETHING IS PLAYING
+        # NEW TRACK GOES TO QUEUE
+        # ------------------------------------------------
 
-        # اگر چیزی در حال پخش نیست:
-        # مستقیم پخش شود.
-        return await self.play_track(
+        queue = self.queues.setdefault(
+            chat_id,
+            [],
+        )
+
+        queue.append(track)
+
+        logger.info(
+            "➕ Added to queue | chat=%s | %s",
+            chat_id,
+            track.display_name(),
+        )
+
+        return {
+            "status": "queued",
+            "track": track,
+            "position": len(queue),
+            "queue_size": len(queue),
+        }
+
+async def play_query(
+    self,
+    chat_id: int,
+    query: str,
+) -> dict:
+
+    track = await self.resolve(
+        query
+    )
+
+    if not track:
+        return {
+            "status": "not_found",
+            "track": None,
+        }
+
+    return await self.play(
+        chat_id,
+        track,
+    )
+
+# ========================================================
+# START TRACK
+# ========================================================
+
+async def _start_track_locked(
+    self,
+    chat_id: int,
+    track: TrackInfo,
+) -> dict:
+
+    prepared = await self._prepare_track(
+        track
+    )
+
+    if not prepared:
+
+        logger.error(
+            "❌ Could not prepare track: %s",
+            track.display_name(),
+        )
+
+        return {
+            "status": "error",
+            "track": track,
+            "error": "download_failed",
+        }
+
+    if not prepared.file_path:
+
+        return {
+            "status": "error",
+            "track": prepared,
+            "error": "file_missing",
+        }
+
+    # ----------------------------------------------------
+    # Play
+    # ----------------------------------------------------
+
+    try:
+
+        await self._call_play(
+            chat_id,
+            prepared.file_path,
+        )
+
+    except Exception:
+
+        logger.exception(
+            "❌ Failed to start track in chat %s",
+            chat_id,
+        )
+
+        return {
+            "status": "error",
+            "track": prepared,
+            "error": "play_failed",
+        }
+
+    # ----------------------------------------------------
+    # State
+    # ----------------------------------------------------
+
+    self.current[chat_id] = prepared
+    self.paused[chat_id] = False
+    self.started_at[chat_id] = time.monotonic()
+    self.paused_at[chat_id] = 0.0
+    self.offset[chat_id] = 0.0
+    self.active_chat_ids.add(chat_id)
+
+    logger.info(
+        "▶️ Playing | chat=%s | %s",
+        chat_id,
+        prepared.display_name(),
+    )
+
+    return {
+        "status": "playing",
+        "track": prepared,
+        "queue_size": len(
+            self.queues.get(chat_id, [])
+        ),
+    }
+
+async def play_track(
+    self,
+    chat_id: int,
+    track: TrackInfo,
+    save_history: bool = True,
+) -> dict:
+
+    chat_id = int(chat_id)
+
+    async with self._get_lock(chat_id):
+
+        if save_history:
+
+            old = self.current.get(
+                chat_id
+            )
+
+            if old:
+
+                self.history.setdefault(
+                    chat_id,
+                    [],
+                ).append(old)
+
+        return await self._start_track_locked(
             chat_id,
             track,
         )
 
-    # ========================================================
-    # ADD TO QUEUE
-    # ========================================================
+# ========================================================
+# ADD QUEUE
+# ========================================================
 
-    async def add_to_queue(
-        self,
-        chat_id: int,
-        track: TrackInfo,
-    ) -> int:
+async def add_to_queue(
+    self,
+    chat_id: int,
+    track: TrackInfo,
+) -> dict:
 
-        if not track:
-            return 0
+    chat_id = int(chat_id)
 
-        queue = self._queue(chat_id)
+    async with self._get_lock(chat_id):
+
+        queue = self.queues.setdefault(
+            chat_id,
+            [],
+        )
 
         queue.append(track)
 
         position = len(queue)
 
         logger.info(
-            "➕ QUEUED | chat=%s | position=%s | title=%s",
-            chat_id,
+            "➕ Queue #%s | chat=%s | %s",
             position,
-            track.title,
+            chat_id,
+            track.display_name(),
         )
 
-        return position
+        return {
+            "status": "queued",
+            "position": position,
+            "queue_size": position,
+            "track": track,
+        }
 
-    # ========================================================
-    # PAUSE
-    # ========================================================
+# ========================================================
+# NEXT
+# ========================================================
 
-    async def pause(
-        self,
-        chat_id: int,
-    ) -> bool:
+async def next(
+    self,
+    chat_id: int,
+    automatic: bool = False,
+) -> dict:
 
-        if (
-            self.call is None
-            or chat_id not in self.current
-            or chat_id in self.paused
-        ):
-            return False
+    chat_id = int(chat_id)
 
-        try:
+    # ----------------------------------------------------
+    # Avoid two simultaneous next operations.
+    # ----------------------------------------------------
 
-            self.offset[chat_id] = (
-                await self.get_position(chat_id)
-            )
+    if chat_id in self._advancing:
+        return {
+            "status": "already_advancing",
+        }
 
-            await self.call.pause(chat_id)
+    self._advancing.add(chat_id)
 
-            self.paused.add(chat_id)
+    try:
 
-            logger.info(
-                "⏸️ PAUSED | chat=%s | position=%s",
-                chat_id,
-                self.offset[chat_id],
-            )
+        async with self._get_lock(chat_id):
 
-            return True
-
-        except Exception:
-            logger.exception(
-                "PAUSE FAILED | chat=%s",
-                chat_id,
-            )
-
-            return False
-
-    # ========================================================
-    # RESUME
-    # ========================================================
-
-    async def resume(
-        self,
-        chat_id: int,
-    ) -> bool:
-
-        if (
-            self.call is None
-            or chat_id not in self.current
-            or chat_id not in self.paused
-        ):
-            return False
-
-        try:
-
-            await self.call.resume(chat_id)
-
-            self.started_at[chat_id] = time.monotonic()
-
-            self.paused.discard(chat_id)
-
-            logger.info(
-                "▶️ RESUMED | chat=%s",
-                chat_id,
-            )
-
-            return True
-
-        except Exception:
-            logger.exception(
-                "RESUME FAILED | chat=%s",
-                chat_id,
-            )
-
-            return False
-
-    # ========================================================
-    # STOP / END
-    # ========================================================
-
-    async def stop(
-        self,
-        chat_id: int,
-    ) -> bool:
-
-        if self.call is None:
-            return False
-
-        success = False
-
-        try:
-
-            await self.call.leave_call(
+            old = self.current.get(
                 chat_id
             )
 
-            success = True
+            queue = self.queues.setdefault(
+                chat_id,
+                [],
+            )
+
+            # --------------------------------------------
+            # Save current in history
+            # --------------------------------------------
+
+            if old:
+
+                self.history.setdefault(
+                    chat_id,
+                    [],
+                ).append(old)
+
+            # --------------------------------------------
+            # QUEUE HAS NEXT TRACK
+            # --------------------------------------------
+
+            if queue:
+
+                next_track = queue.pop(0)
+
+                result = await self._start_track_locked(
+                    chat_id,
+                    next_track,
+                )
+
+                result["automatic"] = automatic
+
+                logger.info(
+                    "⏭️ Next track | chat=%s | remaining=%s",
+                    chat_id,
+                    len(queue),
+                )
+
+                return result
+
+            # --------------------------------------------
+            # NOTHING IN QUEUE
+            # --------------------------------------------
+
+            self.current.pop(
+                chat_id,
+                None,
+            )
+
+            self.paused.pop(
+                chat_id,
+                None,
+            )
+
+            self.started_at.pop(
+                chat_id,
+                None,
+            )
+
+            self.paused_at.pop(
+                chat_id,
+                None,
+            )
+
+            self.offset.pop(
+                chat_id,
+                None,
+            )
+
+            await self._call_leave(
+                chat_id
+            )
+
+            self.active_chat_ids.discard(
+                chat_id
+            )
+
+            logger.info(
+                "⏹️ Queue empty | chat=%s",
+                chat_id,
+            )
+
+            return {
+                "status": "empty",
+                "track": None,
+                "automatic": automatic,
+            }
+
+    finally:
+
+        self._advancing.discard(
+            chat_id
+        )
+
+# ========================================================
+# AUTO NEXT
+# ========================================================
+
+async def on_stream_end(
+    self,
+    chat_id: int,
+) -> dict:
+
+    """
+    Called by main.py when PyTgCalls reports
+    that the current stream has ended.
+    """
+
+    chat_id = int(chat_id)
+
+    logger.info(
+        "🎵 Stream ended | chat=%s",
+        chat_id,
+    )
+
+    return await self.next(
+        chat_id,
+        automatic=True,
+    )
+
+# Alias for compatibility
+async def handle_stream_end(
+    self,
+    chat_id: int,
+) -> dict:
+
+    return await self.on_stream_end(
+        chat_id
+    )
+
+# ========================================================
+# PAUSE
+# ========================================================
+
+async def pause(
+    self,
+    chat_id: int,
+) -> dict:
+
+    chat_id = int(chat_id)
+
+    async with self._get_lock(chat_id):
+
+        if chat_id not in self.current:
+
+            return {
+                "status": "nothing_playing"
+            }
+
+        if self.paused.get(
+            chat_id,
+            False,
+        ):
+
+            return {
+                "status": "already_paused",
+                "track": self.current[chat_id],
+            }
+
+        pause_method = getattr(
+            self.call,
+            "pause",
+            None,
+        )
+
+        if not callable(pause_method):
+
+            return {
+                "status": "unsupported",
+            }
+
+        try:
+
+            result = pause_method(
+                chat_id
+            )
+
+            if asyncio.iscoroutine(result):
+                await result
 
         except Exception:
 
-            try:
+            logger.exception(
+                "Pause failed | chat=%s",
+                chat_id,
+            )
 
-                await self.call.leave_group_call(
-                    chat_id
-                )
+            return {
+                "status": "error"
+            }
 
-                success = True
+        self.paused[chat_id] = True
+        self.paused_at[chat_id] = time.monotonic()
 
-            except Exception:
+        logger.info(
+            "⏸️ Paused | chat=%s",
+            chat_id,
+        )
 
-                logger.warning(
-                    "LEAVE CALL FAILED | chat=%s",
-                    chat_id,
-                    exc_info=True,
-                )
+        return {
+            "status": "paused",
+            "track": self.current[chat_id],
+        }
 
-        # اتمام واقعی:
-        # آهنگ فعلی + صف پاک می‌شوند.
+# ========================================================
+# RESUME
+# ========================================================
+
+async def resume(
+    self,
+    chat_id: int,
+) -> dict:
+
+    chat_id = int(chat_id)
+
+    async with self._get_lock(chat_id):
+
+        if chat_id not in self.current:
+
+            return {
+                "status": "nothing_playing"
+            }
+
+        if not self.paused.get(
+            chat_id,
+            False,
+        ):
+
+            return {
+                "status": "already_playing",
+                "track": self.current[chat_id],
+            }
+
+        resume_method = getattr(
+            self.call,
+            "resume",
+            None,
+        )
+
+        if not callable(resume_method):
+
+            return {
+                "status": "unsupported",
+            }
+
+        try:
+
+            result = resume_method(
+                chat_id
+            )
+
+            if asyncio.iscoroutine(result):
+                await result
+
+        except Exception:
+
+            logger.exception(
+                "Resume failed | chat=%s",
+                chat_id,
+            )
+
+            return {
+                "status": "error"
+            }
+
+        self.paused[chat_id] = False
+
+        if self.paused_at.get(chat_id):
+
+            self.offset[chat_id] += (
+                time.monotonic()
+                - self.paused_at[chat_id]
+            )
+
+        self.paused_at[chat_id] = 0.0
+
+        logger.info(
+            "▶️ Resumed | chat=%s",
+            chat_id,
+        )
+
+        return {
+            "status": "resumed",
+            "track": self.current[chat_id],
+        }
+
+# ========================================================
+# STOP / END
+# ========================================================
+
+async def stop(
+    self,
+    chat_id: int,
+    clear_queue: bool = True,
+) -> dict:
+
+    chat_id = int(chat_id)
+
+    async with self._get_lock(chat_id):
+
+        current = self.current.get(
+            chat_id
+        )
+
+        if clear_queue:
+
+            self.queues.pop(
+                chat_id,
+                None,
+            )
+
         self.current.pop(
             chat_id,
             None,
         )
 
-        self.queues.pop(
+        self.paused.pop(
             chat_id,
             None,
         )
 
-        self.paused.discard(
-            chat_id
+        self.started_at.pop(
+            chat_id,
+            None,
         )
 
-        self.started_at.pop(
+        self.paused_at.pop(
             chat_id,
             None,
         )
@@ -1159,470 +1157,410 @@ class MusicPlayer:
             None,
         )
 
-        logger.info(
-            "⏹️ STOPPED | chat=%s",
-            chat_id,
-        )
-
-        return success
-
-    # ========================================================
-    # NEXT
-    # ========================================================
-
-    async def next(
-        self,
-        chat_id: int,
-    ) -> Optional[TrackInfo]:
-
-        queue = self.queues.get(
-            chat_id,
-            [],
-        )
-
-        # صف خالی است
-        if not queue:
-
-            await self.stop(
-                chat_id
-            )
-
-            return None
-
-        # اولین آهنگ صف
-        track = queue.pop(0)
-
-        logger.info(
-            "⏭️ NEXT | chat=%s | title=%s | remaining=%s",
-            chat_id,
-            track.title,
-            len(queue),
-        )
-
-        # آهنگ بعدی را مستقیم جایگزین می‌کنیم.
-        # آهنگ قبلی وارد history می‌شود.
-        success = await self.play_track(
-            chat_id,
-            track,
-            save_history=True,
-        )
-
-        if success:
-
-            return self.current.get(
-                chat_id
-            )
-
-        # اگر پخش شکست خورد،
-        # آهنگ را برگردانیم اول صف
-        queue.insert(
-            0,
-            track,
-        )
-
-        logger.error(
-            "NEXT FAILED | returned track to queue | chat=%s",
-            chat_id,
-        )
-
-        return None
-
-    # ========================================================
-    # PREVIOUS
-    # ========================================================
-
-    async def previous(
-        self,
-        chat_id: int,
-    ) -> Optional[TrackInfo]:
-
-        history = self.history.get(
-            chat_id,
-            [],
-        )
-
-        if not history:
-            return None
-
-        track = history.pop()
-
-        success = await self.play_track(
-            chat_id,
-            track,
-            save_history=False,
-        )
-
-        if success:
-            return self.current.get(
-                chat_id
-            )
-
-        history.append(track)
-
-        return None
-
-    # ========================================================
-    # SEEK
-    # ========================================================
-
-    async def seek(
-        self,
-        chat_id: int,
-        seconds: int,
-    ) -> bool:
-
-        if (
-            self.call is None
-            or chat_id not in self.current
-        ):
-            return False
-
-        seek_method = getattr(
-            self.call,
-            "seek",
-            None,
-        )
-
-        if not callable(seek_method):
-            return False
-
-        try:
-
-            current_position = (
-                await self.get_position(chat_id)
-            )
-
-            target = max(
-                0,
-                current_position + int(seconds),
-            )
-
-            duration = self.current[
-                chat_id
-            ].duration
-
-            if duration > 0:
-                target = min(
-                    target,
-                    duration - 1,
-                )
-
-            result = seek_method(
-                chat_id,
-                target,
-            )
-
-            if asyncio.iscoroutine(result):
-                await result
-
-            self.offset[chat_id] = target
-            self.started_at[chat_id] = time.monotonic()
-
-            logger.info(
-                "⏩ SEEK | chat=%s | target=%s",
-                chat_id,
-                target,
-            )
-
-            return True
-
-        except Exception:
-            logger.exception(
-                "SEEK FAILED | chat=%s",
-                chat_id,
-            )
-
-            return False
-
-    # ========================================================
-    # POSITION
-    # ========================================================
-
-    async def get_position(
-        self,
-        chat_id: int,
-    ) -> int:
-
-        if chat_id not in self.current:
-            return 0
-
-        if chat_id in self.paused:
-
-            return int(
-                self.offset.get(
-                    chat_id,
-                    0,
-                )
-            )
-
-        started = self.started_at.get(
+        await self._call_leave(
             chat_id
         )
 
-        if started is None:
-            return 0
-
-        position = (
-            self.offset.get(
-                chat_id,
-                0,
-            )
-            + (
-                time.monotonic()
-                - started
-            )
-        )
-
-        duration = int(
-            self.current[
-                chat_id
-            ].duration
-            or 0
-        )
-
-        if duration > 0:
-            position = min(
-                position,
-                duration,
-            )
-
-        return max(
-            0,
-            int(position),
-        )
-
-    # ========================================================
-    # VOLUME
-    # ========================================================
-
-    async def set_volume(
-        self,
-        chat_id: int,
-        volume: int,
-    ) -> bool:
-
-        if (
-            self.call is None
-            or chat_id not in self.current
-        ):
-            return False
-
-        try:
-
-            volume = max(
-                1,
-                min(
-                    200,
-                    int(volume),
-                ),
-            )
-
-            await self.call.change_volume(
-                chat_id,
-                volume,
-            )
-
-            self.volume[chat_id] = volume
-
-            logger.info(
-                "🔊 VOLUME | chat=%s | volume=%s",
-                chat_id,
-                volume,
-            )
-
-            return True
-
-        except Exception:
-            logger.exception(
-                "VOLUME FAILED | chat=%s",
-                chat_id,
-            )
-
-            return False
-
-    def get_volume(
-        self,
-        chat_id: int,
-    ) -> int:
-
-        return self.volume.get(
-            chat_id,
-            100,
-        )
-
-    # ========================================================
-    # CURRENT
-    # ========================================================
-
-    def get_current(
-        self,
-        chat_id: int,
-    ) -> Optional[TrackInfo]:
-
-        return self.current.get(
+        self.active_chat_ids.discard(
             chat_id
         )
 
-    # ========================================================
-    # QUEUE LIST
-    # ========================================================
-
-    def get_queue(
-        self,
-        chat_id: int,
-    ) -> list[TrackInfo]:
-
-        return list(
-            self.queues.get(
-                chat_id,
-                [],
-            )
+        logger.info(
+            "⏹️ Stopped | chat=%s",
+            chat_id,
         )
 
-    # ========================================================
-    # QUEUE COUNT
-    # ========================================================
+        return {
+            "status": "stopped",
+            "track": current,
+        }
 
-    def queue_count(
-        self,
-        chat_id: int,
-    ) -> int:
+# ========================================================
+# CLEAR QUEUE
+# ========================================================
 
-        return len(
-            self.queues.get(
-                chat_id,
-                [],
-            )
-        )
+async def clear_queue(
+    self,
+    chat_id: int,
+) -> int:
 
-    # ========================================================
-    # CLEAR QUEUE ONLY
-    # ========================================================
+    chat_id = int(chat_id)
 
-    def clear_queue(
-        self,
-        chat_id: int,
-    ) -> int:
+    async with self._get_lock(chat_id):
 
-        queue = self.queues.get(
+        queue = self.queues.pop(
             chat_id,
             [],
         )
 
         count = len(queue)
 
-        self.queues.pop(
-            chat_id,
-            None,
-        )
-
         logger.info(
-            "🧹 QUEUE CLEARED | chat=%s | count=%s",
+            "🗑️ Queue cleared | chat=%s | count=%s",
             chat_id,
             count,
         )
 
         return count
 
-    # ========================================================
-    # STATE
-    # ========================================================
+# ========================================================
+# PREVIOUS
+# ========================================================
 
-    def is_playing(
-        self,
-        chat_id: int,
-    ) -> bool:
+async def previous(
+    self,
+    chat_id: int,
+) -> dict:
 
-        return (
-            chat_id in self.current
-            and chat_id not in self.paused
-        )
+    chat_id = int(chat_id)
 
-    def is_paused(
-        self,
-        chat_id: int,
-    ) -> bool:
+    async with self._get_lock(chat_id):
 
-        return (
-            chat_id in self.current
-            and chat_id in self.paused
-        )
-
-    def has_current(
-        self,
-        chat_id: int,
-    ) -> bool:
-
-        return chat_id in self.current
-
-    # ========================================================
-    # CLEANUP
-    # ========================================================
-
-    async def cleanup_chat(
-        self,
-        chat_id: int,
-    ):
-
-        self.current.pop(
+        history = self.history.setdefault(
             chat_id,
-            None,
+            [],
         )
 
-        self.queues.pop(
-            chat_id,
-            None,
-        )
+        if not history:
 
-        self.history.pop(
-            chat_id,
-            None,
-        )
+            return {
+                "status": "no_history"
+            }
 
-        self.paused.discard(
+        previous_track = history.pop()
+
+        current = self.current.get(
             chat_id
         )
 
-        self.started_at.pop(
+        if current:
+
+            self.queues.setdefault(
+                chat_id,
+                [],
+            ).insert(
+                0,
+                current,
+            )
+
+        return await self._start_track_locked(
             chat_id,
+            previous_track,
+        )
+
+# ========================================================
+# SEEK
+# ========================================================
+
+async def seek(
+    self,
+    chat_id: int,
+    seconds: int,
+) -> dict:
+
+    chat_id = int(chat_id)
+    seconds = max(0, int(seconds))
+
+    seek_method = getattr(
+        self.call,
+        "seek",
+        None,
+    )
+
+    if not callable(seek_method):
+
+        return {
+            "status": "unsupported"
+        }
+
+    try:
+
+        result = seek_method(
+            chat_id,
+            seconds,
+        )
+
+        if asyncio.iscoroutine(result):
+            await result
+
+    except Exception:
+
+        logger.exception(
+            "Seek failed | chat=%s",
+            chat_id,
+        )
+
+        return {
+            "status": "error"
+        }
+
+    self.offset[chat_id] = float(
+        seconds
+    )
+
+    self.started_at[chat_id] = (
+        time.monotonic()
+    )
+
+    return {
+        "status": "seeked",
+        "seconds": seconds,
+    }
+
+# ========================================================
+# POSITION
+# ========================================================
+
+def get_position(
+    self,
+    chat_id: int,
+) -> int:
+
+    chat_id = int(chat_id)
+
+    if chat_id not in self.current:
+        return 0
+
+    base = self.offset.get(
+        chat_id,
+        0.0,
+    )
+
+    if self.paused.get(
+        chat_id,
+        False,
+    ):
+
+        if self.paused_at.get(chat_id):
+
+            return int(
+                base
+                + (
+                    self.paused_at[chat_id]
+                    - self.started_at.get(
+                        chat_id,
+                        self.paused_at[chat_id],
+                    )
+                )
+            )
+
+        return int(base)
+
+    return int(
+        base
+        + (
+            time.monotonic()
+            - self.started_at.get(
+                chat_id,
+                time.monotonic(),
+            )
+        )
+    )
+
+# ========================================================
+# VOLUME
+# ========================================================
+
+async def set_volume(
+    self,
+    chat_id: int,
+    volume: int,
+) -> dict:
+
+    chat_id = int(chat_id)
+
+    volume = max(
+        0,
+        min(200, int(volume)),
+    )
+
+    volume_method = getattr(
+        self.call,
+        "change_volume_call",
+        None,
+    )
+
+    if not callable(volume_method):
+
+        volume_method = getattr(
+            self.call,
+            "set_volume",
             None,
         )
 
-        self.offset.pop(
+    if not callable(volume_method):
+
+        return {
+            "status": "unsupported"
+        }
+
+    try:
+
+        result = volume_method(
             chat_id,
-            None,
+            volume,
         )
 
-        self.volume.pop(
-            chat_id,
-            None,
-        )
+        if asyncio.iscoroutine(result):
+            await result
 
-        self.locks.pop(
-            chat_id,
-            None,
-        )
+    except Exception:
 
-        logger.info(
-            "🧹 CLEANUP | chat=%s",
+        logger.exception(
+            "Volume change failed | chat=%s",
             chat_id,
         )
 
-رفتار این نسخه
+        return {
+            "status": "error"
+        }
 
-- "پخش آهنگ اول" → مستقیم پخش می‌شود.
-- وقتی آهنگ اول در حال پخش است و "پخش آهنگ دوم" بزنی → آهنگ اول قطع نمی‌شود و دومی می‌رود صف.
-- "پخش آهنگ سوم" → می‌رود جایگاه دوم صف.
-- "بعدی" → آهنگ فعلی عوض می‌شود و اولین آهنگ صف پخش می‌شود.
-- اگر "بعدی" را وقتی صف خالی است بزنی → پخش تمام می‌شود.
-- "مکث" → مکث.
-- "ادامه" / "ازسرگیری" → ادامه.
-- "اتمام" → پخش و صف پاک می‌شوند.
-- "صف" → می‌تواند "get_queue()" را بخواند.
-- "قبلی" → از history آهنگ قبلی را برمی‌گرداند.
-- اگر دانلود آهنگ بعدی شکست بخورد، از صف حذف نمی‌شود و دوباره قابل پخش است.
-- جستجوی "پخش اسم آهنگ" هم در این نسخه با "ytsearch" به شکل مستقیم و استاندارد انجام می‌شود.
+    return {
+        "status": "volume_changed",
+        "volume": volume,
+    }
 
-یک نکته مهم: این "player.py" به‌تنهایی کافی نیست که وقتی آهنگ خودش تمام شد، خودکار برود سراغ آهنگ بعدی؛ برای آن باید callback/event پایان استریم در "main.py" یا "handlers.py" هم وصل باشد. اما دستور "بعدی" با این نسخه صف را درست کنترل می‌کند.
+# ========================================================
+# CURRENT
+# ========================================================
 
-بعد از جایگزینی، فعلاً فایل دیگری را دست نزن. اول تست کنیم "پخش" → "پخش آهنگ دوم" → "صف" → "بعدی" درست کار می‌کند؛ بعد می‌رویم سراغ دستورات "ترفیع موزیک" و "معاون پلیر".
+def get_current(
+    self,
+    chat_id: int,
+) -> Optional[TrackInfo]:
+
+    return self.current.get(
+        int(chat_id)
+    )
+
+# ========================================================
+# QUEUE
+# ========================================================
+
+def get_queue(
+    self,
+    chat_id: int,
+) -> list[TrackInfo]:
+
+    return list(
+        self.queues.get(
+            int(chat_id),
+            [],
+        )
+    )
+
+def queue_count(
+    self,
+    chat_id: int,
+) -> int:
+
+    return len(
+        self.queues.get(
+            int(chat_id),
+            [],
+        )
+    )
+
+# ========================================================
+# STATE
+# ========================================================
+
+def is_playing(
+    self,
+    chat_id: int,
+) -> bool:
+
+    return int(chat_id) in self.current
+
+def is_paused(
+    self,
+    chat_id: int,
+) -> bool:
+
+    return bool(
+        self.paused.get(
+            int(chat_id),
+            False,
+        )
+    )
+
+# ========================================================
+# CLEANUP
+# ========================================================
+
+async def cleanup_chat(
+    self,
+    chat_id: int,
+):
+
+    chat_id = int(chat_id)
+
+    try:
+        await self.stop(
+            chat_id,
+            clear_queue=True,
+        )
+    except Exception:
+        logger.exception(
+            "Cleanup failed | chat=%s",
+            chat_id,
+        )
+
+    self.history.pop(
+        chat_id,
+        None,
+    )
+
+    self._locks.pop(
+        chat_id,
+        None,
+    )
+
+async def cleanup(self):
+
+    chat_ids = set(
+        self.active_chat_ids
+    )
+
+    chat_ids.update(
+        self.current.keys()
+    )
+
+    for chat_id in list(chat_ids):
+
+        try:
+            await self.cleanup_chat(
+                chat_id
+            )
+        except Exception:
+            logger.exception(
+                "Cleanup failed | chat=%s",
+                chat_id,
+            )
+
+    # ----------------------------------------------------
+    # Remove temporary downloads.
+    # ----------------------------------------------------
+
+    try:
+
+        for file in DOWNLOAD_DIR.iterdir():
+
+            if not file.is_file():
+                continue
+
+            try:
+                file.unlink()
+            except Exception:
+                pass
+
+    except Exception:
+        pass
+
+============================================================
+
+GLOBAL SINGLETON HELPER
+
+============================================================
+
+downloader = MusicDownloader()
