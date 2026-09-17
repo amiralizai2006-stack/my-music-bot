@@ -1,30 +1,18 @@
-"""
-Telegram Music Bot handlers.
-Persian commands + English aliases.
-"""
-
 import logging
-from datetime import datetime
-from typing import Optional
-
-from pyrogram import Client, filters
-from pyrogram.types import Message
-
-from database import db, QueueItem
-from player import downloader, MusicPlayer, TrackInfo
-from optional_deps import VOICE_CHAT_AVAILABLE
+import re
+from pyrogram import filters
 
 logger = logging.getLogger(__name__)
 
-# These are injected from main.py by set_bot_instances()
-app: Optional[Client] = None
+app = None
 pytgcalls_client = None
-player: Optional[MusicPlayer] = None
+player = None
 shutdown_event = None
+
+_handlers_registered = False
 
 
 def set_bot_instances(bot_app, pytgcalls, music_player, event):
-    """Receive initialized objects from main.py."""
     global app, pytgcalls_client, player, shutdown_event
 
     app = bot_app
@@ -32,407 +20,170 @@ def set_bot_instances(bot_app, pytgcalls, music_player, event):
     player = music_player
     shutdown_event = event
 
-    logger.info("✅ Handler instances initialized")
+    register_handlers()
+
+    logger.info("✅ Persian command handlers registered")
 
 
-async def get_queue_text(chat_id: int) -> str:
-    queue = await db.get_queue(chat_id)
+def register_handlers():
+    global _handlers_registered
 
-    if not queue:
-        return "📋 صف موزیک خالی است."
+    if _handlers_registered:
+        return
 
-    lines = ["📋 **صف موزیک:**", ""]
+    if app is None:
+        raise RuntimeError("Bot app has not been initialized")
 
-    for index, item in enumerate(queue, 1):
-        duration = (
-            f"{item.duration // 60}:{item.duration % 60:02d}"
-            if item.duration
-            else "??:??"
-        )
+    @app.on_message(filters.regex(r"^پخش(?:\s+(.+))?$") & filters.group)
+    async def play_handler(client, message):
+        query = message.matches[0].group(1)
 
-        lines.append(
-            f"{index}. 🎵 **{item.title}**\n"
-            f"   ⏱ `{duration}` | 👤 {item.requested_by}"
-        )
+        if not query and message.reply_to_message:
+            if message.reply_to_message.audio:
+                await message.reply("🎵 دریافت موزیک از پیام در حال انجام است...")
+                return
 
-    return "\n".join(lines)
-
-
-async def play_queue_item(item: QueueItem) -> bool:
-    """Convert a queue item into TrackInfo and play it."""
-    if not player or not VOICE_CHAT_AVAILABLE:
-        return False
-
-    track = TrackInfo(
-        title=item.title,
-        duration=item.duration,
-        url=item.url,
-        webpage_url=item.url,
-        thumbnail="",
-        uploader="",
-        filepath=item.filepath,
-    )
-
-    return await player.play(item.chat_id, track)
-
-
-async def play_next(chat_id: int) -> bool:
-    """Play the first item in the queue."""
-    if not player or not VOICE_CHAT_AVAILABLE:
-        return False
-
-    item = await db.get_next_in_queue(chat_id)
-
-    if not item:
-        player.current_track = None
-        player.is_playing = False
-        return False
-
-    if not item.filepath:
-        await db.remove_from_queue(item.id)
-        await db.reorder_queue(chat_id)
-        return await play_next(chat_id)
-
-    success = await play_queue_item(item)
-
-    if success:
-        await db.remove_from_queue(item.id)
-        await db.reorder_queue(chat_id)
-        return True
-
-    return False
-
-
-# ============================================================
-# Persian commands
-# ============================================================
-
-
-@app.on_message(
-    filters.regex(r"^(?:پخش|play)(?:\s+(.+))?$") & filters.group
-)
-async def persian_play_cmd(client: Client, message: Message):
-    query = message.matches[0].group(1)
-
-    # Reply-to-audio/music support
-    if not query and message.reply_to_message:
-        replied = message.reply_to_message
-
-        if replied.audio or replied.voice or replied.video:
-            await message.reply(
-                "⚠️ پخش مستقیم فایل ریپلای‌شده در این نسخه هنوز فعال نیست.\n"
-                "لطفاً نام آهنگ را بعد از «پخش» بنویس."
-            )
+        if not query:
+            await message.reply("🎵 اسم آهنگ یا لینک موزیک را بنویس.")
             return
 
-    if not query:
-        await message.reply(
-            "🎵 برای پخش، نام آهنگ را بعد از «پخش» بنویس.\n\n"
-            "مثال:\n"
-            "پخش محسن یگانه\n"
-            "پخش Shape of You"
-        )
-        return
+        if player is None:
+            await message.reply("❌ پخش‌کننده آماده نیست.")
+            return
 
-    chat_id = message.chat.id
-    user = message.from_user
+        try:
+            await message.reply(f"🔎 در حال جستجو: {query}")
 
-    status_msg = await message.reply("🔍 در حال جستجوی موزیک...")
+            track = await player.search(query)
 
-    track = await downloader.extract_info(query)
+            if not track:
+                await message.reply("❌ موزیک پیدا نشد.")
+                return
 
-    if not track:
-        await status_msg.edit("❌ موزیکی پیدا نشد.")
-        return
+        except Exception as e:
+            logger.exception("Play command error")
+            await message.reply("❌ هنگام جستجوی موزیک خطایی رخ داد.")
 
-    await status_msg.edit(
-        f"🎵 **{track.title}**\n"
-        f"👤 {track.uploader}\n\n"
-        "⬇️ در حال دانلود..."
+    @app.on_message(filters.regex(r"^مکث$") & filters.group)
+    async def pause_handler(client, message):
+        if player is None:
+            return
+
+        try:
+            success = await player.pause(message.chat.id)
+
+            if success:
+                await message.reply("⏸ پخش موزیک متوقف شد.")
+            else:
+                await message.reply("❌ موزیکی در حال پخش نیست.")
+        except Exception:
+            logger.exception("Pause command error")
+            await message.reply("❌ خطا در مکث موزیک.")
+
+    @app.on_message(filters.regex(r"^ادامه$") & filters.group)
+    async def resume_handler(client, message):
+        if player is None:
+            return
+
+        try:
+            success = await player.resume(message.chat.id)
+
+            if success:
+                await message.reply("▶️ پخش ادامه پیدا کرد.")
+            else:
+                await message.reply("❌ موزیکی برای ادامه وجود ندارد.")
+        except Exception:
+            logger.exception("Resume command error")
+            await message.reply("❌ خطا در ادامه پخش.")
+
+    @app.on_message(filters.regex(r"^اتمام$") & filters.group)
+    async def stop_handler(client, message):
+        if player is None:
+            return
+
+        try:
+            success = await player.stop(message.chat.id)
+
+            if success:
+                await message.reply("⏹ پخش موزیک تمام شد.")
+            else:
+                await message.reply("❌ موزیکی در حال پخش نیست.")
+        except Exception:
+            logger.exception("Stop command error")
+            await message.reply("❌ خطا در اتمام موزیک.")
+
+    @app.on_message(filters.regex(r"^بعدی$") & filters.group)
+    async def next_handler(client, message):
+        await message.reply("⏭ آهنگ بعدی در نسخه فعلی صف‌بندی می‌شود.")
+
+    @app.on_message(filters.regex(r"^صف$") & filters.group)
+    async def queue_handler(client, message):
+        await message.reply("📋 صف پخش فعلاً خالی است.")
+
+    @app.on_message(
+        filters.regex(r"^(?:الان|در حال پخش)$") & filters.group
     )
+    async def now_playing_handler(client, message):
+        if player is None:
+            await message.reply("❌ پخش‌کننده آماده نیست.")
+            return
 
-    filepath = await downloader.download(track)
+        status = player.get_status()
+        current = status.get("current_track")
 
-    if not filepath:
-        await status_msg.edit("❌ دانلود موزیک ناموفق بود.")
-        return
-
-    queue = await db.get_queue(chat_id)
-    position = len(queue) + 1
-
-    item = QueueItem(
-        id=None,
-        chat_id=chat_id,
-        user_id=user.id,
-        title=track.title,
-        duration=track.duration,
-        url=track.webpage_url,
-        filepath=filepath,
-        requested_by=user.username or user.first_name or str(user.id),
-        added_at=datetime.now(),
-        position=position,
-    )
-
-    await db.add_to_queue(item)
-
-    if not VOICE_CHAT_AVAILABLE:
-        await status_msg.edit(
-            f"✅ **{track.title}** دانلود شد.\n\n"
-            "⚠️ قابلیت ویس‌چت در هاست فعلی در دسترس نیست."
-        )
-        return
-
-    if not player.is_playing or player.current_chat_id != chat_id:
-        success = await play_next(chat_id)
-
-        if success:
-            await status_msg.edit(
-                f"▶️ **در حال پخش:**\n"
-                f"🎵 {track.title}\n"
-                f"👤 {track.uploader}"
-            )
+        if current:
+            await message.reply(f"🎵 در حال پخش:\n{current}")
         else:
-            await status_msg.edit(
-                f"❌ پخش **{track.title}** شروع نشد."
-            )
-    else:
-        await status_msg.edit(
-            f"✅ به صف اضافه شد:\n"
-            f"🎵 **{track.title}**\n"
-            f"📋 شماره صف: `{position}`"
-        )
+            await message.reply("🎵 در حال حاضر موزیکی پخش نمی‌شود.")
 
+    @app.on_message(filters.regex(r"^صدا(?:\s+(\d+))?$") & filters.group)
+    async def volume_handler(client, message):
+        if player is None:
+            return
 
-@app.on_message(
-    filters.regex(r"^(?:مکث|pause)$") & filters.group
-)
-async def persian_pause_cmd(client: Client, message: Message):
-    if not VOICE_CHAT_AVAILABLE:
-        await message.reply("❌ ویس‌چت در هاست فعلی فعال نیست.")
-        return
+        match = message.matches[0]
+        value = match.group(1)
 
-    chat_id = message.chat.id
+        if not value:
+            await message.reply(f"🔊 صدا: {player.volume}")
+            return
 
-    if (
-        not player
-        or player.current_chat_id != chat_id
-        or not player.is_playing
-    ):
-        await message.reply("❌ موزیکی در حال پخش نیست.")
-        return
+        try:
+            volume = int(value)
 
-    if player.is_paused:
-        await message.reply("⏸ موزیک از قبل مکث شده است.")
-        return
+            if volume < 0 or volume > 200:
+                await message.reply("❌ میزان صدا باید بین ۰ تا ۲۰۰ باشد.")
+                return
 
-    if await player.pause(chat_id):
-        await message.reply("⏸ موزیک مکث شد.")
-    else:
-        await message.reply("❌ خطا در مکث موزیک.")
+            success = await player.set_volume(message.chat.id, volume)
 
+            if success:
+                await message.reply(f"🔊 صدا روی {volume} تنظیم شد.")
+            else:
+                await message.reply("❌ تغییر صدا انجام نشد.")
+        except Exception:
+            await message.reply("❌ مقدار صدا نامعتبر است.")
 
-@app.on_message(
-    filters.regex(r"^(?:ادامه|ادامه پخش|resume)$") & filters.group
-)
-async def persian_resume_cmd(client: Client, message: Message):
-    if not VOICE_CHAT_AVAILABLE:
-        await message.reply("❌ ویس‌چت در هاست فعلی فعال نیست.")
-        return
-
-    chat_id = message.chat.id
-
-    if (
-        not player
-        or player.current_chat_id != chat_id
-        or not player.is_paused
-    ):
+    @app.on_message(filters.regex(r"^آیدی$") & filters.group)
+    async def id_handler(client, message):
         await message.reply(
-            "❌ موزیک متوقف‌شده‌ای برای ادامه وجود ندارد."
+            f"🆔 آیدی این گروه:\n`{message.chat.id}`"
         )
-        return
 
-    if await player.resume(chat_id):
-        await message.reply("▶️ پخش ادامه یافت.")
-    else:
-        await message.reply("❌ خطا در ادامه پخش.")
-
-
-@app.on_message(
-    filters.regex(r"^(?:اتمام|stop)$") & filters.group
-)
-async def persian_stop_cmd(client: Client, message: Message):
-    if not VOICE_CHAT_AVAILABLE:
-        await message.reply("❌ ویس‌چت در هاست فعلی فعال نیست.")
-        return
-
-    chat_id = message.chat.id
-
-    if not player or player.current_chat_id != chat_id:
-        await message.reply("❌ ربات در ویس‌چت نیست.")
-        return
-
-    success = await player.stop(chat_id)
-    await db.clear_queue(chat_id)
-
-    if success:
-        await message.reply("⏹ پخش تمام شد و صف پاک شد.")
-    else:
-        await message.reply("❌ خطا در اتمام پخش.")
-
-
-@app.on_message(
-    filters.regex(r"^(?:بعدی|skip|next)$") & filters.group
-)
-async def persian_skip_cmd(client: Client, message: Message):
-    if not VOICE_CHAT_AVAILABLE:
-        await message.reply("❌ ویس‌چت در هاست فعلی فعال نیست.")
-        return
-
-    chat_id = message.chat.id
-
-    if (
-        not player
-        or player.current_chat_id != chat_id
-        or not player.is_playing
-    ):
-        await message.reply("❌ موزیکی در حال پخش نیست.")
-        return
-
-    success = await play_next(chat_id)
-
-    if success:
-        await message.reply("⏭ آهنگ بعدی در حال پخش است.")
-    else:
-        await message.reply("⏭ آهنگ دیگری در صف وجود ندارد.")
-
-
-@app.on_message(
-    filters.regex(r"^(?:صف|queue)$") & filters.group
-)
-async def persian_queue_cmd(client: Client, message: Message):
-    text = await get_queue_text(message.chat.id)
-    await message.reply(text)
-
-
-@app.on_message(
-    filters.regex(r"^(?:الان|در حال پخش|now)$") & filters.group
-)
-async def persian_now_cmd(client: Client, message: Message):
-    if (
-        not VOICE_CHAT_AVAILABLE
-        or not player
-        or not player.current_track
-        or player.current_chat_id != message.chat.id
-    ):
-        await message.reply("❌ هیچ موزیکی در حال پخش نیست.")
-        return
-
-    track = player.current_track
-
-    duration_str = (
-        f"{track.duration // 60}:{track.duration % 60:02d}"
-        if track.duration > 0
-        else "??:??"
-    )
-
-    await message.reply(
-        f"🎵 **در حال پخش:**\n"
-        f"**{track.title}**\n"
-        f"👤 {track.uploader or 'نامشخص'}\n"
-        f"⏱ مدت: `{duration_str}`"
-    )
-
-
-@app.on_message(
-    filters.regex(r"^(?:صدا|volume)(?:\s+(\d+))?$") & filters.group
-)
-async def persian_volume_cmd(client: Client, message: Message):
-    if not VOICE_CHAT_AVAILABLE:
-        await message.reply("❌ ویس‌چت در هاست فعلی فعال نیست.")
-        return
-
-    if not player:
-        await message.reply("❌ پخش‌کننده آماده نیست.")
-        return
-
-    value = message.matches[0].group(1)
-
-    if not value:
+    @app.on_message(filters.regex(r"^کمک$") & filters.group)
+    async def help_handler(client, message):
         await message.reply(
-            f"🔊 صدای فعلی: `{player.volume}%`"
-        )
-        return
-
-    vol = max(0, min(200, int(value)))
-    chat_id = message.chat.id
-
-    if player.current_chat_id != chat_id:
-        await message.reply(
-            "❌ ربات در ویس‌چت این گروه نیست."
-        )
-        return
-
-    success = await player.set_volume(chat_id, vol)
-
-    if success:
-        await db.update_chat_settings(
-            chat_id,
-            volume=vol
-        )
-        await message.reply(
-            f"🔊 صدا روی `{vol}%` تنظیم شد."
-        )
-    else:
-        await message.reply(
-            "❌ خطا در تنظیم صدا."
+            "🎵 دستورات موزیک:\n\n"
+            "▶️ پخش نام آهنگ\n"
+            "⏸ مکث\n"
+            "▶️ ادامه\n"
+            "⏹ اتمام\n"
+            "⏭ بعدی\n"
+            "📋 صف\n"
+            "🎵 الان\n"
+            "🔊 صدا 100\n"
+            "🆔 آیدی\n"
+            "❓ کمک"
         )
 
-
-@app.on_message(
-    filters.regex(r"^(?:آیدی|id)$") & filters.group
-)
-async def persian_id_cmd(client: Client, message: Message):
-    await message.reply(
-        f"🆔 **آیدی گروه:** `{message.chat.id}`\n"
-        f"👤 **آیدی شما:** `{message.from_user.id}`"
-    )
-
-
-@app.on_message(
-    filters.regex(r"^(?:کمک|help)$")
-)
-async def persian_help_cmd(client: Client, message: Message):
-    await message.reply(
-        "🎵 **راهنمای ربات موزیک**\n\n"
-        "▶️ `پخش نام آهنگ` — جستجو و پخش\n"
-        "⏸ `مکث` — توقف موقت\n"
-        "▶️ `ادامه` — ادامه پخش\n"
-        "⏹ `اتمام` — پایان پخش\n"
-        "⏭ `بعدی` — آهنگ بعدی\n"
-        "📋 `صف` — نمایش صف\n"
-        "🎵 `الان` — آهنگ فعلی\n"
-        "🔊 `صدا 100` — تنظیم صدا\n"
-        "🆔 `آیدی` — نمایش آیدی\n"
-        "❓ `کمک` — نمایش راهنما"
-    )
-
-
-# ============================================================
-# English aliases
-# ============================================================
-
-
-@app.on_message(
-    filters.command("start")
-)
-async def start_cmd(client: Client, message: Message):
-    await message.reply(
-        "🎵 **ربات موزیک آماده است.**\n\n"
-        "برای شروع بنویس:\n"
-        "`پخش نام آهنگ`\n\n"
-        "برای دیدن دستورات:\n"
-        "`کمک`"
-    )
-
-
-logger.info("✅ Persian music handlers loaded")
+    _handlers_registered = True
