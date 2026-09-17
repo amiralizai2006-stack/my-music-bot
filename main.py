@@ -29,7 +29,7 @@ from pyrogram import Client
 # ============================================================
 
 logging.basicConfig(
-    level=getattr(config, config.log_level),
+    level=getattr(logging, config.log_level.upper(), logging.INFO),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
         logging.FileHandler(config.log_file),
