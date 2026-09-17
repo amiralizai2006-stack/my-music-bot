@@ -36,13 +36,17 @@ def init(self):
 self.download_dir = Path(
 os.getenv("DOWNLOAD_DIR", "downloads")
 )
-self.download_dir.mkdir(parents=True, exist_ok=True)
+self.download_dir.mkdir(
+parents=True,
+exist_ok=True,
+)
 
 async def search(
     self,
     query: str,
     limit: int = 1,
 ) -> Optional[TrackInfo]:
+
     query = (query or "").strip()
 
     if not query:
@@ -51,7 +55,9 @@ async def search(
     try:
         import yt_dlp
     except ImportError:
-        logger.exception("yt-dlp is not installed")
+        logger.exception(
+            "yt-dlp is not installed"
+        )
         return None
 
     def _search():
@@ -77,7 +83,8 @@ async def search(
         item = entries[0]
 
         return TrackInfo(
-            title=item.get("title") or "موزیک بدون نام",
+            title=item.get("title")
+            or "موزیک بدون نام",
             performer=(
                 item.get("artist")
                 or item.get("uploader")
@@ -88,42 +95,68 @@ async def search(
                 or item.get("uploader")
                 or ""
             ),
-            duration=int(item.get("duration") or 0),
+            duration=int(
+                item.get("duration") or 0
+            ),
             url=item.get("url") or "",
-            webpage_url=item.get("webpage_url")
-            or item.get("original_url")
-            or "",
-            thumbnail=item.get("thumbnail") or "",
-            uploader=item.get("uploader") or "",
+            webpage_url=(
+                item.get("webpage_url")
+                or item.get("original_url")
+                or ""
+            ),
+            thumbnail=(
+                item.get("thumbnail") or ""
+            ),
+            uploader=(
+                item.get("uploader") or ""
+            ),
         )
 
     try:
-        return await asyncio.to_thread(_search)
+        return await asyncio.to_thread(
+            _search
+        )
     except Exception:
-        logger.exception("Music search failed: %s", query)
+        logger.exception(
+            "Music search failed"
+        )
         return None
 
-async def download(self, track: TrackInfo) -> Optional[str]:
+async def download(
+    self,
+    track: TrackInfo,
+) -> Optional[str]:
+
     if not track:
         return None
 
-    if track.filepath and Path(track.filepath).exists():
+    if (
+        track.filepath
+        and Path(track.filepath).exists()
+    ):
         return track.filepath
 
     try:
         import yt_dlp
     except ImportError:
-        logger.exception("yt-dlp is not installed")
+        logger.exception(
+            "yt-dlp is not installed"
+        )
         return None
 
-    source = track.webpage_url or track.url
+    source = (
+        track.webpage_url
+        or track.url
+    )
 
     if not source:
         return None
 
     def _download():
+
         output_template = str(
-            self.download_dir / "%(id)s.%(ext)s"
+            self.download_dir
+            / "%(id)s.%(ext)s"
         )
 
         options = {
@@ -149,10 +182,14 @@ async def download(self, track: TrackInfo) -> Optional[str]:
                 download=True,
             )
 
-            prepared = ydl.prepare_filename(info)
+            prepared = ydl.prepare_filename(
+                info
+            )
 
         mp3_path = str(
-            Path(prepared).with_suffix(".mp3")
+            Path(prepared).with_suffix(
+                ".mp3"
+            )
         )
 
         if Path(mp3_path).exists():
@@ -164,7 +201,9 @@ async def download(self, track: TrackInfo) -> Optional[str]:
         return None
 
     try:
-        filepath = await asyncio.to_thread(_download)
+        filepath = await asyncio.to_thread(
+            _download
+        )
 
         if filepath:
             track.filepath = filepath
@@ -173,8 +212,7 @@ async def download(self, track: TrackInfo) -> Optional[str]:
 
     except Exception:
         logger.exception(
-            "Download failed: %s",
-            track.title,
+            "Download failed"
         )
         return None
 
@@ -182,77 +220,133 @@ async def prepare(
     self,
     track: TrackInfo,
 ) -> Optional[TrackInfo]:
-    filepath = await self.download(track)
+
+    filepath = await self.download(
+        track
+    )
 
     if not filepath:
         return None
 
     track.filepath = filepath
+
     return track
 
 class MusicPlayer:
-def init(
-self,
-app: Any = None,
-call: Any = None,
+
+def __init__(
+    self,
+    app: Any = None,
+    call: Any = None,
 ):
-self.app = app
-self.call = call
+
+    self.app = app
+    self.call = call
 
     self.downloader = MusicDownloader()
 
-    self.queues: dict[int, list[TrackInfo]] = {}
-    self.current: dict[int, Optional[TrackInfo]] = {}
-    self.history: dict[int, list[TrackInfo]] = {}
+    self.queues: dict[
+        int,
+        list[TrackInfo]
+    ] = {}
 
-    self.started_at: dict[int, float] = {}
-    self.paused_at: dict[int, float] = {}
-    self.volume: dict[int, int] = {}
+    self.current: dict[
+        int,
+        Optional[TrackInfo]
+    ] = {}
 
-    self.locks: dict[int, asyncio.Lock] = {}
+    self.history: dict[
+        int,
+        list[TrackInfo]
+    ] = {}
 
-def _lock(self, chat_id: int) -> asyncio.Lock:
+    self.started_at: dict[
+        int,
+        float
+    ] = {}
+
+    self.paused_at: dict[
+        int,
+        float
+    ] = {}
+
+    self.volume: dict[
+        int,
+        int
+    ] = {}
+
+    self.locks: dict[
+        int,
+        asyncio.Lock
+    ] = {}
+
+def _lock(
+    self,
+    chat_id: int,
+) -> asyncio.Lock:
+
     if chat_id not in self.locks:
-        self.locks[chat_id] = asyncio.Lock()
+        self.locks[chat_id] = (
+            asyncio.Lock()
+        )
 
     return self.locks[chat_id]
 
-def _queue(self, chat_id: int) -> list[TrackInfo]:
-    return self.queues.setdefault(chat_id, [])
+def _queue(
+    self,
+    chat_id: int,
+) -> list[TrackInfo]:
+
+    return self.queues.setdefault(
+        chat_id,
+        [],
+    )
 
 async def play_track(
     self,
     chat_id: int,
     track: TrackInfo,
 ) -> bool:
+
     if not track:
         return False
 
     async with self._lock(chat_id):
-        prepared = await self.downloader.prepare(track)
 
-        if not prepared or not prepared.filepath:
+        prepared = (
+            await self.downloader.prepare(
+                track
+            )
+        )
+
+        if (
+            not prepared
+            or not prepared.filepath
+        ):
             logger.error(
-                "Could not prepare track: %s",
-                track.title,
+                "Could not prepare track"
+            )
+            return False
+
+        if self.call is None:
+            logger.error(
+                "PyTgCalls is not connected"
             )
             return False
 
         try:
-            stream = MediaStream(prepared.filepath)
-
-            if self.call is None:
-                logger.error(
-                    "PyTgCalls client is not connected"
-                )
-                return False
+            stream = MediaStream(
+                prepared.filepath
+            )
 
             await self.call.play(
                 chat_id,
                 stream,
             )
 
-            old = self.current.get(chat_id)
+            old = self.current.get(
+                chat_id
+            )
 
             if old:
                 self.history.setdefault(
@@ -260,22 +354,24 @@ async def play_track(
                     [],
                 ).append(old)
 
-            self.current[chat_id] = prepared
-            self.started_at[chat_id] = time.time()
-            self.paused_at.pop(chat_id, None)
+            self.current[chat_id] = (
+                prepared
+            )
 
-            logger.info(
-                "Playing in %s: %s",
+            self.started_at[chat_id] = (
+                time.time()
+            )
+
+            self.paused_at.pop(
                 chat_id,
-                prepared.title,
+                None,
             )
 
             return True
 
         except Exception:
             logger.exception(
-                "Failed to start playback in %s",
-                chat_id,
+                "Playback failed"
             )
             return False
 
@@ -284,11 +380,14 @@ async def play(
     chat_id: int,
     track: TrackInfo,
 ) -> bool:
+
     if not track:
         return False
 
     if self.current.get(chat_id):
-        self._queue(chat_id).append(track)
+        self._queue(chat_id).append(
+            track
+        )
         return True
 
     return await self.play_track(
@@ -301,10 +400,13 @@ async def add_to_queue(
     chat_id: int,
     track: TrackInfo,
 ) -> bool:
+
     if not track:
         return False
 
-    self._queue(chat_id).append(track)
+    self._queue(chat_id).append(
+        track
+    )
 
     return True
 
@@ -312,20 +414,24 @@ async def pause(
     self,
     chat_id: int,
 ) -> bool:
+
     if self.call is None:
         return False
 
     try:
-        await self.call.pause(chat_id)
+        await self.call.pause(
+            chat_id
+        )
 
-        self.paused_at[chat_id] = time.time()
+        self.paused_at[chat_id] = (
+            time.time()
+        )
 
         return True
 
     except Exception:
         logger.exception(
-            "Pause failed in %s",
-            chat_id,
+            "Pause failed"
         )
         return False
 
@@ -333,11 +439,14 @@ async def resume(
     self,
     chat_id: int,
 ) -> bool:
+
     if self.call is None:
         return False
 
     try:
-        await self.call.resume(chat_id)
+        await self.call.resume(
+            chat_id
+        )
 
         paused = self.paused_at.pop(
             chat_id,
@@ -345,15 +454,17 @@ async def resume(
         )
 
         if paused:
-            elapsed = time.time() - paused
-            self.started_at[chat_id] += elapsed
+            self.started_at[
+                chat_id
+            ] += (
+                time.time() - paused
+            )
 
         return True
 
     except Exception:
         logger.exception(
-            "Resume failed in %s",
-            chat_id,
+            "Resume failed"
         )
         return False
 
@@ -361,6 +472,7 @@ async def stop(
     self,
     chat_id: int,
 ) -> bool:
+
     try:
         if self.call is not None:
             await self.call.leave_call(
@@ -368,15 +480,28 @@ async def stop(
             )
     except Exception:
         logger.exception(
-            "Failed to leave call %s",
-            chat_id,
+            "Leave call failed"
         )
 
-    self.current.pop(chat_id, None)
-    self.started_at.pop(chat_id, None)
-    self.paused_at.pop(chat_id, None)
+    self.current.pop(
+        chat_id,
+        None,
+    )
 
-    self.queues.pop(chat_id, None)
+    self.started_at.pop(
+        chat_id,
+        None,
+    )
+
+    self.paused_at.pop(
+        chat_id,
+        None,
+    )
+
+    self.queues.pop(
+        chat_id,
+        None,
+    )
 
     return True
 
@@ -384,21 +509,16 @@ async def next(
     self,
     chat_id: int,
 ) -> Optional[TrackInfo]:
+
     queue = self._queue(chat_id)
 
     if not queue:
-        await self.stop(chat_id)
+        await self.stop(
+            chat_id
+        )
         return None
 
     track = queue.pop(0)
-
-    old = self.current.get(chat_id)
-
-    if old:
-        self.history.setdefault(
-            chat_id,
-            [],
-        ).append(old)
 
     self.current[chat_id] = None
 
@@ -416,6 +536,7 @@ async def previous(
     self,
     chat_id: int,
 ) -> Optional[TrackInfo]:
+
     history = self.history.setdefault(
         chat_id,
         [],
@@ -426,10 +547,14 @@ async def previous(
 
     track = history.pop()
 
-    current = self.current.get(chat_id)
+    current = self.current.get(
+        chat_id
+    )
 
     if current:
-        self._queue(chat_id).insert(
+        self._queue(
+            chat_id
+        ).insert(
             0,
             current,
         )
@@ -450,7 +575,12 @@ async def clear_queue(
     self,
     chat_id: int,
 ) -> bool:
-    self.queues.pop(chat_id, None)
+
+    self.queues.pop(
+        chat_id,
+        None,
+    )
+
     return True
 
 async def set_volume(
@@ -458,9 +588,13 @@ async def set_volume(
     chat_id: int,
     volume: int,
 ) -> bool:
+
     volume = max(
         1,
-        min(200, int(volume)),
+        min(
+            200,
+            int(volume),
+        ),
     )
 
     if self.call is None:
@@ -472,14 +606,15 @@ async def set_volume(
             volume,
         )
 
-        self.volume[chat_id] = volume
+        self.volume[chat_id] = (
+            volume
+        )
 
         return True
 
     except Exception:
         logger.exception(
-            "Volume change failed in %s",
-            chat_id,
+            "Volume change failed"
         )
         return False
 
@@ -487,15 +622,18 @@ async def get_position(
     self,
     chat_id: int,
 ) -> int:
-    current = self.current.get(chat_id)
+
+    current = self.current.get(
+        chat_id
+    )
 
     if not current:
         return 0
 
-    if chat_id in self.paused_at:
-        end = self.paused_at[chat_id]
-    else:
-        end = time.time()
+    end = self.paused_at.get(
+        chat_id,
+        time.time(),
+    )
 
     started = self.started_at.get(
         chat_id,
@@ -522,10 +660,13 @@ async def seek(
     chat_id: int,
     position: int,
 ) -> bool:
+
     if self.call is None:
         return False
 
-    current = self.current.get(chat_id)
+    current = self.current.get(
+        chat_id
+    )
 
     if not current:
         return False
@@ -555,8 +696,7 @@ async def seek(
 
     except Exception:
         logger.exception(
-            "Seek failed in %s",
-            chat_id,
+            "Seek failed"
         )
         return False
 
@@ -565,6 +705,7 @@ async def forward(
     chat_id: int,
     seconds: int = 10,
 ) -> bool:
+
     position = await self.get_position(
         chat_id
     )
@@ -579,6 +720,7 @@ async def backward(
     chat_id: int,
     seconds: int = 10,
 ) -> bool:
+
     position = await self.get_position(
         chat_id
     )
@@ -595,12 +737,16 @@ def get_current(
     self,
     chat_id: int,
 ) -> Optional[TrackInfo]:
-    return self.current.get(chat_id)
+
+    return self.current.get(
+        chat_id
+    )
 
 def get_queue(
     self,
     chat_id: int,
 ) -> list[TrackInfo]:
+
     return list(
         self.queues.get(
             chat_id,
@@ -612,7 +758,10 @@ async def get_status(
     self,
     chat_id: int,
 ) -> dict[str, Any]:
-    current = self.current.get(chat_id)
+
+    current = self.current.get(
+        chat_id
+    )
 
     position = await self.get_position(
         chat_id
@@ -637,26 +786,35 @@ async def get_status(
             chat_id,
             100,
         ),
-        "paused": chat_id in self.paused_at,
+        "paused": (
+            chat_id in self.paused_at
+        ),
     }
 
 async def cleanup_files(
     self,
     chat_id: int,
 ) -> None:
+
     files = []
 
-    current = self.current.get(chat_id)
+    current = self.current.get(
+        chat_id
+    )
 
     if current and current.filepath:
-        files.append(current.filepath)
+        files.append(
+            current.filepath
+        )
 
     for track in self.queues.get(
         chat_id,
         [],
     ):
         if track.filepath:
-            files.append(track.filepath)
+            files.append(
+                track.filepath
+            )
 
     for filepath in files:
         try:
@@ -667,31 +825,58 @@ async def cleanup_files(
 
         except Exception:
             logger.exception(
-                "Could not remove file: %s",
-                filepath,
+                "Could not remove file"
             )
 
 async def cleanup_chat(
     self,
     chat_id: int,
 ) -> None:
+
     try:
-        await self.stop(chat_id)
+        await self.stop(
+            chat_id
+        )
     except Exception:
         logger.exception(
-            "Cleanup stop failed: %s",
-            chat_id,
+            "Cleanup failed"
         )
 
-    self.queues.pop(chat_id, None)
-    self.current.pop(chat_id, None)
-    self.history.pop(chat_id, None)
-    self.started_at.pop(chat_id, None)
-    self.paused_at.pop(chat_id, None)
-    self.volume.pop(chat_id, None)
-    self.locks.pop(chat_id, None)
+    self.queues.pop(
+        chat_id,
+        None,
+    )
+
+    self.current.pop(
+        chat_id,
+        None,
+    )
+
+    self.history.pop(
+        chat_id,
+        None,
+    )
+
+    self.started_at.pop(
+        chat_id,
+        None,
+    )
+
+    self.paused_at.pop(
+        chat_id,
+        None,
+    )
+
+    self.volume.pop(
+        chat_id,
+        None,
+    )
+
+    self.locks.pop(
+        chat_id,
+        None,
+    )
 
 :::end
 
-این را دقیقاً داخل "player.py" بگذار و فایل قبلی را کامل پاک/جایگزین کن.
-بعد Deploy/Restart را بزن. اگر خطای بعدی آمد، همان متن خطا را بفرست تا مرحله بعدی را هم اصلاح کنیم.
+فقط همین کد داخل "player.py" باشد. بعد Commit کن و در Render دوباره Deploy latest commit را بزن.
