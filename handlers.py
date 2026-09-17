@@ -1,4 +1,5 @@
 import logging
+import re
 from pathlib import Path
 
 from pyrogram import filters
@@ -16,25 +17,25 @@ shutdown_event = None
 
 def set_bot_instances(
     bot_instance,
-    pytgcalls_instance,
-    player_instance,
-    shutdown,
+    pytgcalls_instance=None,
+    player_instance=None,
+    shutdown_event_instance=None,
 ):
-    global bot, pytgcalls, player, shutdown_event
+    global bot, player, pytgcalls, shutdown_event
 
     bot = bot_instance
     pytgcalls = pytgcalls_instance
     player = player_instance
-    shutdown_event = shutdown
+    shutdown_event = shutdown_event_instance
 
     logger.info("Handlers received bot instance")
 
 
 def _get_reply_audio(message: Message):
-    reply = message.reply_to_message
-
-    if reply is None:
+    if not message.reply_to_message:
         return None
+
+    reply = message.reply_to_message
 
     if reply.audio:
         return reply.audio
@@ -50,33 +51,126 @@ def _get_reply_audio(message: Message):
     return None
 
 
-def _audio_title(audio):
+def _audio_title(media):
     return (
-        getattr(audio, "file_name", None)
-        or getattr(audio, "title", None)
-        or "موزیک"
+        getattr(media, "title", None)
+        or getattr(media, "file_name", None)
+        or "آهنگ"
     )
 
 
-def _audio_artist(audio):
+def _audio_artist(media):
     return (
-        getattr(audio, "performer", None)
-        or "نامشخص"
+        getattr(media, "performer", None)
+        or getattr(media, "artist", None)
+        or "Unknown"
     )
+
+
+async def _download_and_play(
+    message: Message,
+    track: TrackInfo,
+):
+    if player is None:
+        await message.reply_text(
+            "❌ پخش‌کننده آماده نیست."
+        )
+        return
+
+    try:
+        await message.reply_text(
+            "⏳ در حال دانلود..."
+        )
+
+        logger.info(
+            "DOWNLOAD REQUEST | title=%s | webpage=%s | url=%s",
+            track.title,
+            track.webpage_url,
+            track.url,
+        )
+
+        downloader = getattr(
+            player,
+            "downloader",
+            None,
+        )
+
+        if downloader is None:
+            logger.error(
+                "PLAYER DOWNLOADER IS NONE"
+            )
+
+            await message.reply_text(
+                "❌ دانلودر آماده نیست."
+            )
+            return
+
+        filepath = await downloader.download(
+            track
+        )
+
+        if not filepath:
+            logger.error(
+                "DOWNLOAD RETURNED NONE | title=%s",
+                track.title,
+            )
+
+            await message.reply_text(
+                "❌ دانلود آهنگ انجام نشد."
+            )
+            return
+
+        track.filepath = filepath
+
+        logger.info(
+            "DOWNLOAD COMPLETE | %s",
+            filepath,
+        )
+
+        ok = await player.play(
+            message.chat.id,
+            track,
+        )
+
+        if not ok:
+            await message.reply_text(
+                "❌ پخش آهنگ انجام نشد."
+            )
+            return
+
+        await message.reply_text(
+            f"▶️ در حال پخش\n\n"
+            f"🎵 {track.title}\n"
+            f"👤 {track.artist}"
+        )
+
+    except Exception as e:
+        logger.exception(
+            "PLAY/DOWNLOAD ERROR | %s: %s",
+            type(e).__name__,
+            str(e),
+        )
+
+        await message.reply_text(
+            f"❌ خطای پخش: "
+            f"{type(e).__name__}: {e}"
+        )
 
 
 def register_handlers():
 
     if bot is None:
         raise RuntimeError(
-            "Cannot register handlers: bot is None"
+            "Bot instance has not been set"
         )
 
-    logger.info("REGISTERING TELEGRAM HANDLERS")
+    logger.info(
+        "REGISTERING TELEGRAM HANDLERS"
+    )
 
-    # =====================================================
+    # =========================
     # START
-    # =====================================================
+    # =========================
 
     @bot.on_message(
         filters.private & filters.command("start")
@@ -84,405 +178,306 @@ def register_handlers():
     @bot.on_message(
         filters.group & filters.command("start")
     )
-    async def start_handler(client, message):
-
-        logger.info(
-            "START RECEIVED | chat=%s | user=%s",
-            message.chat.id,
-            message.from_user.id if message.from_user else None,
-        )
-
+    async def start_handler(
+        client,
+        message,
+    ):
         await message.reply_text(
             "🎵 سلام!\n\n"
-            "ربات موزیک پلیر آماده است.\n\n"
-            "🎵 پخش نام آهنگ\n"
-            "🎶 روی فایل موزیک ریپلای کن و بنویس: پخش\n"
-            "⏸ مکث\n"
-            "▶️ ادامه\n"
-            "⏹ اتمام\n"
-            "⏭ بعدی\n"
-            "🎵 الان\n"
-            "📋 صف\n"
-            "❓ کمک"
+            "به ربات موزیک پلیر خوش آمدید.\n\n"
+            "برای پخش آهنگ:\n"
+            "• پخش نام آهنگ\n"
+            "• یا روی فایل آهنگ ریپلای کنید و بنویسید: پخش"
         )
 
-    # =====================================================
+    # =========================
     # HELP
-    # =====================================================
+    # =========================
 
     @bot.on_message(
         filters.text
         & filters.regex(r"^\s*کمک\s*$")
     )
-    async def help_handler(client, message):
-
-        logger.info(
-            "HELP RECEIVED | chat=%s",
-            message.chat.id,
-        )
-
+    async def help_handler(
+        client,
+        message,
+    ):
         await message.reply_text(
-            "🎵 دستورات موزیک\n\n"
-            "▶️ پخش نام آهنگ\n"
-            "🎵 ریپلای روی موزیک + پخش\n"
-            "⏸ مکث\n"
-            "▶️ ادامه\n"
-            "⏹ اتمام\n"
-            "⏭ بعدی\n"
-            "⏮ قبلی\n"
-            "⏪ عقب 10\n"
-            "10 جلو\n"
-            "⚡ سرعت\n"
-            "🎵 الان\n"
-            "📋 صف"
+            "🎵 دستورات موزیک:\n\n"
+            "پخش نام آهنگ\n"
+            "پخش ← روی آهنگ ریپلای شود\n"
+            "مکث\n"
+            "ادامه\n"
+            "اتمام\n"
+            "بعدی\n"
+            "قبلی"
         )
 
-    # =====================================================
+    # =========================
     # PLAY
-    # =====================================================
+    # =========================
 
     @bot.on_message(
         filters.text
-        & filters.regex(r"^\s*پخش(?:\s+(.+))?\s*$")
+        & filters.regex(
+            r"^\s*پخش(?:\s+(.+))?\s*$"
+        )
     )
-    async def play_handler(client, message):
+    async def play_handler(
+        client,
+        message,
+    ):
+        text = message.text or ""
 
-        logger.info(
-            "PLAY RECEIVED | chat=%s | text=%r",
-            message.chat.id,
-            message.text,
+        match = re.match(
+            r"^\s*پخش(?:\s+(.+))?\s*$",
+            text,
         )
 
-        try:
+        query = (
+            match.group(1).strip()
+            if match and match.group(1)
+            else ""
+        )
 
-            text = (message.text or "").strip()
-            parts = text.split(maxsplit=1)
+        logger.info(
+            "PLAY RECEIVED | chat=%s | text=%r | query=%r",
+            message.chat.id,
+            text,
+            query,
+        )
 
-            # -------------------------------------------------
-            # Reply music
-            # -------------------------------------------------
+        # -------------------------
+        # REPLY TO AUDIO
+        # -------------------------
 
-            audio = _get_reply_audio(message)
+        if not query:
 
-            if audio:
+            media = _get_reply_audio(
+                message
+            )
 
+            if not media:
                 await message.reply_text(
-                    "⏳ در حال آماده‌سازی موزیک..."
+                    "❌ روی یک فایل آهنگ ریپلای کنید و «پخش» بزنید."
+                )
+                return
+
+            await message.reply_text(
+                "⏳ در حال آماده‌سازی آهنگ..."
+            )
+
+            try:
+
+                file_name = (
+                    getattr(
+                        media,
+                        "file_name",
+                        None,
+                    )
+                    or f"audio_{message.id}.mp3"
                 )
 
-                filename = _audio_title(audio)
+                downloads_dir = Path(
+                    getattr(
+                        player.downloader,
+                        "downloads_dir",
+                        "downloads",
+                    )
+                )
 
-                safe_name = "".join(
-                    char
-                    for char in filename
-                    if char.isalnum()
-                    or char in " ._-"
-                ).strip()
-
-                if not safe_name:
-                    safe_name = "music.mp3"
-
-                download_dir = Path("downloads")
-                download_dir.mkdir(
+                downloads_dir.mkdir(
                     parents=True,
                     exist_ok=True,
                 )
 
-                destination = (
-                    download_dir / safe_name
+                filepath = await client.download_media(
+                    message.reply_to_message,
+                    file_name=str(
+                        downloads_dir / file_name
+                    ),
                 )
 
-                if destination.exists():
-
-                    destination = (
-                        download_dir
-                        / f"{destination.stem}_{message.id}"
-                        f"{destination.suffix}"
-                    )
-
-                downloaded = (
-                    await message.reply_to_message.download(
-                        file_name=str(destination)
-                    )
-                )
-
-                if not downloaded:
-
+                if not filepath:
                     await message.reply_text(
-                        "❌ دانلود فایل انجام نشد."
+                        "❌ دریافت فایل آهنگ انجام نشد."
                     )
                     return
 
                 track = TrackInfo(
-                    title=_audio_title(audio),
-                    performer=_audio_artist(audio),
-                    filepath=str(downloaded),
+                    title=_audio_title(media),
+                    performer=_audio_artist(media),
+                    filepath=filepath,
                 )
 
-                await player.play(
+                logger.info(
+                    "REPLY AUDIO READY | title=%s | file=%s",
+                    track.title,
+                    filepath,
+                )
+
+                ok = await player.play(
                     message.chat.id,
                     track,
                 )
 
-                await message.reply_text(
-                    "🎵 در حال پخش\n\n"
-                    f"🎶 آهنگ: {track.title}\n"
-                    f"👤 خواننده: {track.performer}"
-                )
-
-                return
-
-            # -------------------------------------------------
-            # No song name
-            # -------------------------------------------------
-
-            if len(parts) < 2:
+                if not ok:
+                    await message.reply_text(
+                        "❌ پخش آهنگ انجام نشد."
+                    )
+                    return
 
                 await message.reply_text(
-                    "🎵 اسم آهنگ را بعد از «پخش» بنویس.\n\n"
-                    "مثال:\n"
-                    "پخش مهیار"
+                    f"▶️ در حال پخش\n\n"
+                    f"🎵 {track.title}\n"
+                    f"👤 {track.artist}"
                 )
-                return
 
-            query = parts[1].strip()
+            except Exception as e:
 
-            # -------------------------------------------------
-            # Downloader
-            # -------------------------------------------------
-
-            if player is None:
+                logger.exception(
+                    "REPLY PLAY ERROR | %s: %s",
+                    type(e).__name__,
+                    str(e),
+                )
 
                 await message.reply_text(
-                    "❌ Player آماده نیست."
+                    f"❌ خطای پخش: "
+                    f"{type(e).__name__}: {e}"
                 )
-                return
 
-            downloader = getattr(
-                player,
-                "downloader",
-                None,
-            )
+            return
 
-            if downloader is None:
+        # -------------------------
+        # SEARCH BY NAME
+        # -------------------------
 
-                await message.reply_text(
-                    "❌ Downloader فعال نیست."
-                )
-                return
+        await message.reply_text(
+            f"🔎 در حال جستجوی:\n"
+            f"🎵 {query}"
+        )
 
-            await message.reply_text(
-                f"🔎 در حال جستجوی:\n"
-                f"🎵 {query}"
-            )
+        try:
 
-            tracks = await downloader.search(
+            results = await player.downloader.search(
                 query,
                 limit=1,
             )
 
-            if not tracks:
+            if not results:
 
                 await message.reply_text(
-                    "❌ آهنگ پیدا نشد."
+                    "❌ آهنگی پیدا نشد."
                 )
                 return
 
-            track = tracks[0]
+            track = results[0]
+
+            logger.info(
+                "SEARCH RESULT SELECTED | title=%s | artist=%s | webpage=%s | url=%s",
+                track.title,
+                track.artist,
+                track.webpage_url,
+                track.url,
+            )
 
             await message.reply_text(
                 "⬇️ آهنگ پیدا شد.\n\n"
                 f"🎵 {track.title}\n"
-                f"👤 {track.performer}\n\n"
-                "⏳ در حال دانلود..."
+                f"👤 {track.artist}"
             )
 
-            downloaded = await downloader.download(
-                track
-            )
-
-            if not downloaded:
-
-                await message.reply_text(
-                    "❌ دانلود آهنگ انجام نشد."
-                )
-                return
-
-            await player.play(
-                message.chat.id,
+            await _download_and_play(
+                message,
                 track,
             )
 
-            await message.reply_text(
-                "🎵 در حال پخش\n\n"
-                f"🎶 آهنگ: {track.title}\n"
-                f"👤 خواننده: {track.performer}"
-            )
-
-        except Exception as error:
+        except Exception as e:
 
             logger.exception(
-                "PLAY HANDLER ERROR"
+                "SEARCH PLAY ERROR | %s: %s",
+                type(e).__name__,
+                str(e),
             )
 
             await message.reply_text(
-                "❌ خطای پخش:\n"
-                f"`{type(error).__name__}: {error}`"
+                f"❌ خطای پخش: "
+                f"{type(e).__name__}: {e}"
             )
 
-    # =====================================================
+    # =========================
     # PAUSE
-    # =====================================================
+    # =========================
 
     @bot.on_message(
         filters.text
         & filters.regex(r"^\s*مکث\s*$")
     )
-    async def pause_handler(client, message):
+    async def pause_handler(
+        client,
+        message,
+    ):
+        if player is None:
+            return
 
-        try:
+        ok = await player.pause(
+            message.chat.id
+        )
 
-            await player.pause(
-                message.chat.id
-            )
+        await message.reply_text(
+            "⏸️ آهنگ مکث شد."
+            if ok
+            else "❌ مکث انجام نشد."
+        )
 
-            await message.reply_text(
-                "⏸ آهنگ مکث شد."
-            )
-
-        except Exception as error:
-
-            await message.reply_text(
-                f"❌ خطا:\n`{error}`"
-            )
-
-    # =====================================================
+    # =========================
     # RESUME
-    # =====================================================
+    # =========================
 
     @bot.on_message(
         filters.text
         & filters.regex(r"^\s*ادامه\s*$")
     )
-    async def resume_handler(client, message):
+    async def resume_handler(
+        client,
+        message,
+    ):
+        if player is None:
+            return
 
-        try:
+        ok = await player.resume(
+            message.chat.id
+        )
 
-            await player.resume(
-                message.chat.id
-            )
+        await message.reply_text(
+            "▶️ پخش ادامه پیدا کرد."
+            if ok
+            else "❌ ادامه پخش انجام نشد."
+        )
 
-            await message.reply_text(
-                "▶️ آهنگ ادامه پیدا کرد."
-            )
-
-        except Exception as error:
-
-            await message.reply_text(
-                f"❌ خطا:\n`{error}`"
-            )
-
-    # =====================================================
+    # =========================
     # STOP
-    # =====================================================
+    # =========================
 
     @bot.on_message(
         filters.text
         & filters.regex(r"^\s*اتمام\s*$")
     )
-    async def stop_handler(client, message):
+    async def stop_handler(
+        client,
+        message,
+    ):
+        if player is None:
+            return
 
-        try:
-
-            await player.stop(
-                message.chat.id
-            )
-
-            await message.reply_text(
-                "⏹ آهنگ متوقف شد."
-            )
-
-        except Exception as error:
-
-            await message.reply_text(
-                f"❌ خطا:\n`{error}`"
-            )
-
-    # =====================================================
-    # NOW
-    # =====================================================
-
-    @bot.on_message(
-        filters.text
-        & filters.regex(r"^\s*الان\s*$")
-    )
-    async def now_handler(client, message):
-
-        try:
-
-            status = player.get_status(
-                message.chat.id
-            )
-
-            if not status:
-
-                await message.reply_text(
-                    "❌ در حال حاضر آهنگی پخش نمی‌شود."
-                )
-                return
-
-            await message.reply_text(
-                "🎵 در حال پخش:\n\n"
-                f"🎶 {status.title}\n"
-                f"👤 {status.performer}"
-            )
-
-        except Exception as error:
-
-            await message.reply_text(
-                f"❌ خطا:\n`{error}`"
-            )
-
-    # =====================================================
-    # QUEUE
-    # =====================================================
-
-    @bot.on_message(
-        filters.text
-        & filters.regex(r"^\s*صف\s*$")
-    )
-    async def queue_handler(client, message):
-
-        await message.reply_text(
-            "📋 مدیریت صف در مرحله بعد فعال می‌شود."
+        ok = await player.stop(
+            message.chat.id
         )
 
-    # =====================================================
-    # NEXT
-    # =====================================================
-
-    @bot.on_message(
-        filters.text
-        & filters.regex(r"^\s*بعدی\s*$")
-    )
-    async def next_handler(client, message):
-
         await message.reply_text(
-            "⏭ مدیریت آهنگ بعدی در مرحله بعد فعال می‌شود."
-        )
-
-    # =====================================================
-    # PREVIOUS
-    # =====================================================
-
-    @bot.on_message(
-        filters.text
-        & filters.regex(r"^\s*قبلی\s*$")
-    )
-    async def previous_handler(client, message):
-
-        await message.reply_text(
-            "⏮ مدیریت آهنگ قبلی در مرحله بعد فعال می‌شود."
+            "⏹️ پخش متوقف شد."
+            if ok
+            else "❌ توقف انجام نشد."
         )
 
     logger.info(
