@@ -22,6 +22,11 @@ class TrackInfo:
     thumbnail: str
     uploader: str
     filepath: Optional[str] = None
+    performer: str = ""
+
+    @property
+    def artist(self) -> str:
+        return self.performer or self.uploader or "Unknown"
 
 
 class MusicDownloader:
@@ -30,6 +35,7 @@ class MusicDownloader:
         self.downloads_dir = Path(
             getattr(config, "downloads_dir", "downloads")
         )
+
         self.downloads_dir.mkdir(
             parents=True,
             exist_ok=True,
@@ -95,6 +101,19 @@ class MusicDownloader:
                         or ""
                     )
 
+                    uploader = (
+                        entry.get("uploader")
+                        or entry.get("channel")
+                        or "Unknown"
+                    )
+
+                    performer = (
+                        entry.get("artist")
+                        or entry.get("creator")
+                        or uploader
+                        or "Unknown"
+                    )
+
                     result.append(
                         TrackInfo(
                             title=entry.get(
@@ -119,11 +138,8 @@ class MusicDownloader:
                                 "",
                             )
                             or "",
-                            uploader=entry.get(
-                                "uploader",
-                                "Unknown",
-                            )
-                            or "Unknown",
+                            uploader=uploader,
+                            performer=performer,
                         )
                     )
 
@@ -194,10 +210,14 @@ class MusicDownloader:
                 "format": (
                     "bestaudio[ext=m4a]/"
                     "bestaudio[ext=webm]/"
+                    "bestaudio[ext=opus]/"
                     "bestaudio/best"
                 ),
 
                 "outtmpl": str(output),
+
+                "postprocessors": [],
+
             }
 
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -220,6 +240,7 @@ class MusicDownloader:
                 ".mp3",
                 ".aac",
                 ".wav",
+                ".mp4",
             }
 
             for file in files:
@@ -270,6 +291,10 @@ class MusicDownloader:
             return None
 
 
+# یک Downloader مشترک
+downloader = MusicDownloader()
+
+
 class MusicPlayer:
 
     def __init__(
@@ -278,6 +303,10 @@ class MusicPlayer:
     ):
 
         self.client = pytgcalls_client
+
+        # مهم:
+        # handlers.py از player.downloader استفاده می‌کند.
+        self.downloader = downloader
 
         self.current_track = None
         self.current_chat_id = None
@@ -297,9 +326,10 @@ class MusicPlayer:
         )
 
         logger.info(
-            "MusicPlayer initialized | voice_available=%s | client=%s",
+            "MusicPlayer initialized | voice_available=%s | client=%s | downloader=%s",
             VOICE_CHAT_AVAILABLE,
             self.client is not None,
+            self.downloader is not None,
         )
 
 
@@ -420,9 +450,6 @@ class MusicPlayer:
                 str(e),
             )
 
-            # مهم:
-            # خطای واقعی را دوباره بالا می‌فرستیم
-            # تا handlers.py آن را به ما نشان دهد.
             raise
 
 
@@ -633,6 +660,3 @@ class MusicPlayer:
     ) -> bool:
 
         return self._available
-
-
-downloader = MusicDownloader()
