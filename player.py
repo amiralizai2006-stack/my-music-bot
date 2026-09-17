@@ -62,6 +62,11 @@ class MusicDownloader:
                 "extract_flat": True,
             }
 
+            logger.info(
+                "MUSIC SEARCH START: %s",
+                query,
+            )
+
             with yt_dlp.YoutubeDL(opts) as ydl:
 
                 info = ydl.extract_info(
@@ -70,6 +75,10 @@ class MusicDownloader:
                 )
 
                 if not info:
+                    logger.error(
+                        "SEARCH RETURNED NOTHING: %s",
+                        query,
+                    )
                     return []
 
                 result = []
@@ -118,20 +127,30 @@ class MusicDownloader:
                         )
                     )
 
+                logger.info(
+                    "MUSIC SEARCH SUCCESS: %s result(s)",
+                    len(result),
+                )
+
                 return result
 
         try:
+
             return await loop.run_in_executor(
                 None,
                 _search,
             )
 
-        except Exception:
+        except Exception as e:
+
             logger.exception(
-                "MUSIC SEARCH ERROR: %s",
-                query,
+                "MUSIC SEARCH ERROR: %s: %s",
+                type(e).__name__,
+                str(e),
             )
+
             return []
+
 
     async def download(
         self,
@@ -146,10 +165,12 @@ class MusicDownloader:
         )
 
         if not source:
+
             logger.error(
-                "No source URL for %s",
+                "NO SOURCE URL: %s",
                 track.title,
             )
+
             return None
 
         file_id = uuid.uuid4().hex
@@ -170,8 +191,6 @@ class MusicDownloader:
             opts = {
                 **self._base_opts(),
 
-                # Download audio only.
-                # No FFmpegExtractAudio postprocessor here.
                 "format": (
                     "bestaudio[ext=m4a]/"
                     "bestaudio[ext=webm]/"
@@ -182,7 +201,10 @@ class MusicDownloader:
             }
 
             with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([source])
+
+                ydl.download(
+                    [source]
+                )
 
             files = list(
                 self.downloads_dir.glob(
@@ -208,7 +230,18 @@ class MusicDownloader:
                     in supported
                     and file.stat().st_size > 1024
                 ):
+
+                    logger.info(
+                        "DOWNLOAD SUCCESS: %s",
+                        file,
+                    )
+
                     return str(file)
+
+            logger.error(
+                "DOWNLOAD FILE NOT FOUND: %s",
+                track.title,
+            )
 
             return None
 
@@ -220,28 +253,18 @@ class MusicDownloader:
             )
 
             if not filepath:
-
-                logger.error(
-                    "DOWNLOAD FINISHED BUT FILE NOT FOUND: %s",
-                    track.title,
-                )
-
                 return None
 
             track.filepath = filepath
 
-            logger.info(
-                "DOWNLOAD SUCCESS: %s",
-                filepath,
-            )
-
             return filepath
 
-        except Exception:
+        except Exception as e:
 
             logger.exception(
-                "DOWNLOAD ERROR: %s",
-                track.title,
+                "DOWNLOAD ERROR: %s: %s",
+                type(e).__name__,
+                str(e),
             )
 
             return None
@@ -273,6 +296,13 @@ class MusicPlayer:
             and self.client is not None
         )
 
+        logger.info(
+            "MusicPlayer initialized | voice_available=%s | client=%s",
+            VOICE_CHAT_AVAILABLE,
+            self.client is not None,
+        )
+
+
     async def play(
         self,
         chat_id: int,
@@ -280,52 +310,81 @@ class MusicPlayer:
     ) -> bool:
 
         if not self._available:
+
             logger.error(
-                "PyTgCalls is not available"
+                "VOICE PLAYER UNAVAILABLE | VOICE_CHAT_AVAILABLE=%s | CLIENT=%s",
+                VOICE_CHAT_AVAILABLE,
+                self.client is not None,
             )
+
             return False
 
         if not track.filepath:
+
             logger.error(
-                "Track has no filepath"
+                "TRACK HAS NO FILEPATH: %s",
+                track.title,
             )
+
             return False
 
-        path = Path(track.filepath)
+        path = Path(
+            track.filepath
+        )
 
         if not path.exists():
+
             logger.error(
-                "File does not exist: %s",
+                "FILE DOES NOT EXIST: %s",
                 path,
             )
+
             return False
 
         if path.stat().st_size < 1024:
+
             logger.error(
-                "File is too small: %s",
+                "FILE TOO SMALL: %s",
                 path,
             )
+
             return False
+
+        logger.info(
+            "VOICE PLAY START | chat=%s | file=%s | size=%s",
+            chat_id,
+            path,
+            path.stat().st_size,
+        )
 
         try:
 
             from pytgcalls.types import GroupCallConfig
 
             logger.info(
-                "VOICE PLAY START: chat=%s file=%s",
-                chat_id,
-                path,
+                "GroupCallConfig imported successfully"
             )
 
-            await asyncio.wait_for(
+            config_obj = GroupCallConfig(
+                auto_start=True
+            )
+
+            logger.info(
+                "Calling PyTgCalls.play..."
+            )
+
+            result = await asyncio.wait_for(
                 self.client.play(
                     chat_id,
                     str(path),
-                    config=GroupCallConfig(
-                        auto_start=True
-                    ),
+                    config=config_obj,
                 ),
                 timeout=45,
+            )
+
+            logger.info(
+                "PyTgCalls.play returned: %r",
+                result,
             )
 
             self.current_track = track
@@ -334,28 +393,38 @@ class MusicPlayer:
             self.is_paused = False
 
             logger.info(
-                "VOICE PLAY SUCCESS: chat=%s title=%s",
+                "VOICE PLAY SUCCESS | chat=%s | title=%s",
                 chat_id,
                 track.title,
             )
 
             return True
 
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as e:
 
             logger.error(
-                "VOICE PLAY TIMEOUT: chat=%s",
+                "VOICE PLAY TIMEOUT | chat=%s | %s: %s",
                 chat_id,
+                type(e).__name__,
+                str(e),
             )
+
             return False
 
-        except Exception:
+        except Exception as e:
 
             logger.exception(
-                "VOICE PLAY ERROR: chat=%s",
+                "VOICE PLAY ERROR | chat=%s | %s: %s",
                 chat_id,
+                type(e).__name__,
+                str(e),
             )
-            return False
+
+            # مهم:
+            # خطای واقعی را دوباره بالا می‌فرستیم
+            # تا handlers.py آن را به ما نشان دهد.
+            raise
+
 
     async def stop(
         self,
@@ -379,15 +448,23 @@ class MusicPlayer:
             self.is_playing = False
             self.is_paused = False
 
-            return True
-
-        except Exception:
-
-            logger.exception(
-                "STOP ERROR: %s",
+            logger.info(
+                "VOICE STOP SUCCESS: %s",
                 chat_id,
             )
+
+            return True
+
+        except Exception as e:
+
+            logger.exception(
+                "STOP ERROR: %s: %s",
+                type(e).__name__,
+                str(e),
+            )
+
             return False
+
 
     async def pause(
         self,
@@ -406,6 +483,11 @@ class MusicPlayer:
             )
 
             if method is None:
+
+                logger.error(
+                    "PyTgCalls pause method not available"
+                )
+
                 return False
 
             await method(chat_id)
@@ -415,12 +497,16 @@ class MusicPlayer:
 
             return True
 
-        except Exception:
+        except Exception as e:
 
             logger.exception(
-                "PAUSE ERROR"
+                "PAUSE ERROR: %s: %s",
+                type(e).__name__,
+                str(e),
             )
+
             return False
+
 
     async def resume(
         self,
@@ -439,6 +525,11 @@ class MusicPlayer:
             )
 
             if method is None:
+
+                logger.error(
+                    "PyTgCalls resume method not available"
+                )
+
                 return False
 
             await method(chat_id)
@@ -448,12 +539,16 @@ class MusicPlayer:
 
             return True
 
-        except Exception:
+        except Exception as e:
 
             logger.exception(
-                "RESUME ERROR"
+                "RESUME ERROR: %s: %s",
+                type(e).__name__,
+                str(e),
             )
+
             return False
+
 
     async def set_volume(
         self,
@@ -478,6 +573,7 @@ class MusicPlayer:
             )
 
             if method is None:
+
                 method = getattr(
                     self.client,
                     "change_volume",
@@ -485,6 +581,11 @@ class MusicPlayer:
                 )
 
             if method is None:
+
+                logger.error(
+                    "PyTgCalls volume method not available"
+                )
+
                 return False
 
             await method(
@@ -496,12 +597,16 @@ class MusicPlayer:
 
             return True
 
-        except Exception:
+        except Exception as e:
 
             logger.exception(
-                "VOLUME ERROR"
+                "VOLUME ERROR: %s: %s",
+                type(e).__name__,
+                str(e),
             )
+
             return False
+
 
     def get_status(
         self,
@@ -521,6 +626,7 @@ class MusicPlayer:
             ),
             "volume": self.volume,
         }
+
 
     def is_voice_chat_available(
         self,
