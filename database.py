@@ -1,704 +1,212 @@
-from __future__ import annotations
-
 import sqlite3
-from datetime import datetime, timedelta
+import time
 from pathlib import Path
-from typing import Optional
+
+DB_PATH = Path("musicbot.sqlite3")
 
 
-# =========================================================
-# تنظیمات
-# =========================================================
-
-DB_PATH = Path("data/music_bot.db")
-DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-
-# =========================================================
-# اتصال دیتابیس
-# =========================================================
-
-def get_connection():
-    conn = sqlite3.connect(
-        str(DB_PATH),
-        check_same_thread=False,
-    )
-
+def db():
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-
     return conn
 
 
-# =========================================================
-# ساخت جداول
-# =========================================================
-
 def init_db():
-    conn = get_connection()
+    conn = db()
 
-    try:
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            );
-
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                username TEXT DEFAULT '',
-                first_name TEXT DEFAULT '',
-                created_at TEXT,
-                last_seen TEXT,
-                play_count INTEGER DEFAULT 0
-            );
-
-            CREATE TABLE IF NOT EXISTS music_admins (
-                user_id INTEGER PRIMARY KEY,
-                added_at TEXT
-            );
-
-            CREATE TABLE IF NOT EXISTS subscriptions (
-                user_id INTEGER PRIMARY KEY,
-                activated_at TEXT,
-                expires_at TEXT,
-                active INTEGER DEFAULT 1
-            );
-            """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS chats (
+            chat_id INTEGER PRIMARY KEY,
+            title TEXT,
+            activated_until INTEGER DEFAULT 0
         )
+    """)
 
-        conn.commit()
-
-    finally:
-        conn.close()
-
-
-# =========================================================
-# تنظیمات عمومی
-# =========================================================
-
-def set_setting(
-    key: str,
-    value: str,
-):
-    conn = get_connection()
-
-    try:
-        conn.execute(
-            """
-            INSERT INTO settings(key, value)
-            VALUES (?, ?)
-            ON CONFLICT(key)
-            DO UPDATE SET value = excluded.value
-            """,
-            (
-                key,
-                str(value),
-            ),
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS forced_channels (
+            chat_id INTEGER PRIMARY KEY,
+            username TEXT NOT NULL,
+            title TEXT DEFAULT ''
         )
+    """)
 
-        conn.commit()
-
-    finally:
-        conn.close()
-
-
-def get_setting(
-    key: str,
-    default: Optional[str] = None,
-):
-    conn = get_connection()
-
-    try:
-        row = conn.execute(
-            """
-            SELECT value
-            FROM settings
-            WHERE key = ?
-            """,
-            (key,),
-        ).fetchone()
-
-        if not row:
-            return default
-
-        return row["value"]
-
-    finally:
-        conn.close()
-
-
-def delete_setting(key: str):
-    conn = get_connection()
-
-    try:
-        conn.execute(
-            """
-            DELETE FROM settings
-            WHERE key = ?
-            """,
-            (key,),
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS music_admins (
+            chat_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            promoted_by INTEGER,
+            PRIMARY KEY(chat_id, user_id)
         )
+    """)
 
-        conn.commit()
-
-    finally:
-        conn.close()
-
-
-# =========================================================
-# مالک ربات
-# =========================================================
-
-def set_owner(user_id: int):
-    set_setting(
-        "owner_id",
-        str(user_id),
-    )
-
-
-def get_owner() -> Optional[int]:
-    value = get_setting(
-        "owner_id"
-    )
-
-    if not value:
-        return None
-
-    try:
-        return int(value)
-    except ValueError:
-        return None
-
-
-def is_owner(user_id: int) -> bool:
-    owner_id = get_owner()
-
-    return (
-        owner_id is not None
-        and owner_id == int(user_id)
-    )
-
-
-# =========================================================
-# کاربران
-# =========================================================
-
-def add_user(
-    user_id: int,
-    username: str = "",
-    first_name: str = "",
-):
-    now = datetime.utcnow().isoformat()
-
-    conn = get_connection()
-
-    try:
-        conn.execute(
-            """
-            INSERT INTO users (
-                user_id,
-                username,
-                first_name,
-                created_at,
-                last_seen
-            )
-            VALUES (?, ?, ?, ?, ?)
-
-            ON CONFLICT(user_id)
-            DO UPDATE SET
-                username = excluded.username,
-                first_name = excluded.first_name,
-                last_seen = excluded.last_seen
-            """,
-            (
-                int(user_id),
-                username or "",
-                first_name or "",
-                now,
-                now,
-            ),
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS player_deputies (
+            chat_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            promoted_by INTEGER,
+            PRIMARY KEY(chat_id, user_id)
         )
-
-        conn.commit()
-
-    finally:
-        conn.close()
-
-
-def get_user(
-    user_id: int,
-):
-    conn = get_connection()
-
-    try:
-        return conn.execute(
-            """
-            SELECT *
-            FROM users
-            WHERE user_id = ?
-            """,
-            (int(user_id),),
-        ).fetchone()
-
-    finally:
-        conn.close()
-
-
-def get_user_count() -> int:
-    conn = get_connection()
-
-    try:
-        row = conn.execute(
-            """
-            SELECT COUNT(*) AS count
-            FROM users
-            """
-        ).fetchone()
-
-        return int(row["count"])
-
-    finally:
-        conn.close()
-
-
-def increase_play_count(
-    user_id: int,
-):
-    conn = get_connection()
-
-    try:
-        conn.execute(
-            """
-            UPDATE users
-            SET play_count = play_count + 1,
-                last_seen = ?
-            WHERE user_id = ?
-            """,
-            (
-                datetime.utcnow().isoformat(),
-                int(user_id),
-            ),
-        )
-
-        conn.commit()
-
-    finally:
-        conn.close()
-
-
-def get_total_plays() -> int:
-    conn = get_connection()
-
-    try:
-        row = conn.execute(
-            """
-            SELECT COALESCE(
-                SUM(play_count),
-                0
-            ) AS total
-            FROM users
-            """
-        ).fetchone()
-
-        return int(row["total"])
-
-    finally:
-        conn.close()
-
-
-# =========================================================
-# مدیران موزیک
-# =========================================================
-
-def add_music_admin(
-    user_id: int,
-):
-    conn = get_connection()
-
-    try:
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO music_admins(
-                user_id,
-                added_at
-            )
-            VALUES (?, ?)
-            """,
-            (
-                int(user_id),
-                datetime.utcnow().isoformat(),
-            ),
-        )
-
-        conn.commit()
-
-    finally:
-        conn.close()
-
-
-def remove_music_admin(
-    user_id: int,
-):
-    conn = get_connection()
-
-    try:
-        conn.execute(
-            """
-            DELETE FROM music_admins
-            WHERE user_id = ?
-            """,
-            (int(user_id),),
-        )
-
-        conn.commit()
-
-    finally:
-        conn.close()
-
-
-def is_music_admin(
-    user_id: int,
-) -> bool:
-    if is_owner(user_id):
-        return True
-
-    conn = get_connection()
-
-    try:
-        row = conn.execute(
-            """
-            SELECT user_id
-            FROM music_admins
-            WHERE user_id = ?
-            """,
-            (int(user_id),),
-        ).fetchone()
-
-        return row is not None
-
-    finally:
-        conn.close()
-
-
-def get_music_admins() -> list[int]:
-    conn = get_connection()
-
-    try:
-        rows = conn.execute(
-            """
-            SELECT user_id
-            FROM music_admins
-            ORDER BY added_at ASC
-            """
-        ).fetchall()
-
-        return [
-            int(row["user_id"])
-            for row in rows
-        ]
-
-    finally:
-        conn.close()
-
-
-# =========================================================
-# اشتراک
-# =========================================================
-
-def activate_subscription(
-    user_id: int,
-    days: int,
-):
-    """
-    فعال‌سازی اشتراک.
-
-    اگر کاربر اشتراک فعال داشته باشد،
-    زمان جدید از تاریخ انقضای فعلی اضافه می‌شود.
-    """
-
-    now = datetime.utcnow()
-
-    conn = get_connection()
-
-    try:
-        row = conn.execute(
-            """
-            SELECT expires_at, active
-            FROM subscriptions
-            WHERE user_id = ?
-            """,
-            (int(user_id),),
-        ).fetchone()
-
-        if (
-            row
-            and row["expires_at"]
-            and row["active"]
-        ):
-            try:
-                old_expiry = datetime.fromisoformat(
-                    row["expires_at"]
-                )
-            except ValueError:
-                old_expiry = now
-
-            if old_expiry > now:
-                start = old_expiry
-            else:
-                start = now
-
-        else:
-            start = now
-
-        expires = start + timedelta(
-            days=int(days)
-        )
-
-        conn.execute(
-            """
-            INSERT INTO subscriptions(
-                user_id,
-                activated_at,
-                expires_at,
-                active
-            )
-            VALUES (?, ?, ?, 1)
-
-            ON CONFLICT(user_id)
-            DO UPDATE SET
-                activated_at = excluded.activated_at,
-                expires_at = excluded.expires_at,
-                active = 1
-            """,
-            (
-                int(user_id),
-                now.isoformat(),
-                expires.isoformat(),
-            ),
-        )
-
-        conn.commit()
-
-        return expires
-
-    finally:
-        conn.close()
-
-
-def deactivate_subscription(
-    user_id: int,
-):
-    conn = get_connection()
-
-    try:
-        conn.execute(
-            """
-            UPDATE subscriptions
-            SET active = 0
-            WHERE user_id = ?
-            """,
-            (int(user_id),),
-        )
-
-        conn.commit()
-
-    finally:
-        conn.close()
-
-
-def get_subscription(
-    user_id: int,
-):
-    conn = get_connection()
-
-    try:
-        return conn.execute(
-            """
-            SELECT *
-            FROM subscriptions
-            WHERE user_id = ?
-            """,
-            (int(user_id),),
-        ).fetchone()
-
-    finally:
-        conn.close()
-
-
-def is_subscription_active(
-    user_id: int,
-) -> bool:
-    row = get_subscription(
-        user_id
-    )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+def activate_chat(chat_id: int, title: str, days: int):
+    until = int(time.time()) + days * 86400
+
+    conn = db()
+    conn.execute("""
+        INSERT INTO chats(chat_id, title, activated_until)
+        VALUES (?, ?, ?)
+        ON CONFLICT(chat_id)
+        DO UPDATE SET
+            title=excluded.title,
+            activated_until=excluded.activated_until
+    """, (chat_id, title, until))
+    conn.commit()
+    conn.close()
+
+
+def is_chat_active(chat_id: int) -> bool:
+    conn = db()
+    row = conn.execute(
+        "SELECT activated_until FROM chats WHERE chat_id=?",
+        (chat_id,)
+    ).fetchone()
+    conn.close()
 
     if not row:
         return False
 
-    if not row["active"]:
-        return False
-
-    expires_at = row["expires_at"]
-
-    if not expires_at:
-        return False
-
-    try:
-        expires = datetime.fromisoformat(
-            expires_at
-        )
-    except ValueError:
-        return False
-
-    if expires <= datetime.utcnow():
-        deactivate_subscription(
-            user_id
-        )
-        return False
-
-    return True
+    return int(row["activated_until"]) > int(time.time())
 
 
-def subscription_days_left(
-    user_id: int,
-) -> int:
-    row = get_subscription(
-        user_id
+def get_chat_expiry(chat_id: int):
+    conn = db()
+    row = conn.execute(
+        "SELECT activated_until FROM chats WHERE chat_id=?",
+        (chat_id,)
+    ).fetchone()
+    conn.close()
+
+    return row["activated_until"] if row else 0
+
+
+def add_forced_channel(chat_id: int, username: str, title: str = ""):
+    username = username.strip().lstrip("@")
+
+    conn = db()
+    conn.execute("""
+        INSERT INTO forced_channels(chat_id, username, title)
+        VALUES (?, ?, ?)
+        ON CONFLICT(chat_id)
+        DO UPDATE SET
+            username=excluded.username,
+            title=excluded.title
+    """, (chat_id, username, title))
+    conn.commit()
+    conn.close()
+
+
+def remove_forced_channel(chat_id: int):
+    conn = db()
+    conn.execute(
+        "DELETE FROM forced_channels WHERE chat_id=?",
+        (chat_id,)
     )
+    conn.commit()
+    conn.close()
 
-    if not row or not row["active"]:
-        return 0
 
-    try:
-        expires = datetime.fromisoformat(
-            row["expires_at"]
-        )
-    except (ValueError, TypeError):
-        return 0
+def get_forced_channel(chat_id: int):
+    conn = db()
+    row = conn.execute(
+        "SELECT * FROM forced_channels WHERE chat_id=?",
+        (chat_id,)
+    ).fetchone()
+    conn.close()
 
-    remaining = (
-        expires - datetime.utcnow()
-    ).total_seconds()
+    return row
 
-    if remaining <= 0:
-        deactivate_subscription(
-            user_id
-        )
-        return 0
 
-    return max(
-        0,
-        int(
-            remaining / 86400
-        ),
+def promote_music_admin(chat_id: int, user_id: int, promoted_by: int):
+    conn = db()
+    conn.execute("""
+        INSERT OR REPLACE INTO music_admins(chat_id, user_id, promoted_by)
+        VALUES (?, ?, ?)
+    """, (chat_id, user_id, promoted_by))
+    conn.commit()
+    conn.close()
+
+
+def demote_music_admin(chat_id: int, user_id: int):
+    conn = db()
+    conn.execute(
+        "DELETE FROM music_admins WHERE chat_id=? AND user_id=?",
+        (chat_id, user_id)
     )
+    conn.commit()
+    conn.close()
 
 
-# =========================================================
-# اشتراک‌های آماده
-# =========================================================
+def is_music_admin(chat_id: int, user_id: int) -> bool:
+    conn = db()
+    row = conn.execute("""
+        SELECT 1 FROM music_admins
+        WHERE chat_id=? AND user_id=?
+    """, (chat_id, user_id)).fetchone()
+    conn.close()
 
-SUBSCRIPTION_DURATIONS = {
-    "10 روز": 10,
-    "یک ماه": 30,
-    "2 ماه": 60,
-    "3 ماه": 90,
-    "6 ماه": 180,
-}
+    return row is not None
 
 
-def activate_10_days(user_id: int):
-    return activate_subscription(
-        user_id,
-        10,
+def promote_deputy(chat_id: int, user_id: int, promoted_by: int):
+    conn = db()
+    conn.execute("""
+        INSERT OR REPLACE INTO player_deputies(chat_id, user_id, promoted_by)
+        VALUES (?, ?, ?)
+    """, (chat_id, user_id, promoted_by))
+    conn.commit()
+    conn.close()
+
+
+def demote_deputy(chat_id: int, user_id: int):
+    conn = db()
+    conn.execute(
+        "DELETE FROM player_deputies WHERE chat_id=? AND user_id=?",
+        (chat_id, user_id)
     )
+    conn.commit()
+    conn.close()
 
 
-def activate_1_month(user_id: int):
-    return activate_subscription(
-        user_id,
-        30,
+def is_deputy(chat_id: int, user_id: int) -> bool:
+    conn = db()
+    row = conn.execute("""
+        SELECT 1 FROM player_deputies
+        WHERE chat_id=? AND user_id=?
+    """, (chat_id, user_id)).fetchone()
+    conn.close()
+
+    return row is not None
+
+
+def clear_music_admins(chat_id: int):
+    conn = db()
+    conn.execute(
+        "DELETE FROM music_admins WHERE chat_id=?",
+        (chat_id,)
     )
+    conn.commit()
+    conn.close()
 
 
-def activate_2_months(user_id: int):
-    return activate_subscription(
-        user_id,
-        60,
+def clear_deputies(chat_id: int):
+    conn = db()
+    conn.execute(
+        "DELETE FROM player_deputies WHERE chat_id=?",
+        (chat_id,)
     )
-
-
-def activate_3_months(user_id: int):
-    return activate_subscription(
-        user_id,
-        90,
-    )
-
-
-def activate_6_months(user_id: int):
-    return activate_subscription(
-        user_id,
-        180,
-    )
-
-
-# =========================================================
-# کانال اجباری
-# =========================================================
-
-def set_required_channel(
-    channel: str,
-):
-    set_setting(
-        "required_channel",
-        channel,
-    )
-
-
-def get_required_channel() -> str:
-    return get_setting(
-        "required_channel",
-        "",
-    ) or ""
-
-
-# =========================================================
-# پشتیبانی
-# =========================================================
-
-def set_support_username(
-    username: str,
-):
-    set_setting(
-        "support_username",
-        username,
-    )
-
-
-def get_support_username() -> str:
-    return get_setting(
-        "support_username",
-        "",
-    ) or ""
-
-
-# =========================================================
-# آمار
-# =========================================================
-
-def get_stats() -> dict:
-    return {
-        "users": get_user_count(),
-        "plays": get_total_plays(),
-        "music_admins": len(
-            get_music_admins()
-        ),
-    }
-
-
-# =========================================================
-# اجرای اولیه
-# =========================================================
-
-init_db()
+    conn.commit()
+    conn.close()
