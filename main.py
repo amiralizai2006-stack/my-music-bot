@@ -9,7 +9,10 @@ from pathlib import Path
 
 from aiohttp import web
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(
+    0,
+    str(Path(__file__).parent),
+)
 
 from config import config, validate_config
 from database import db
@@ -23,6 +26,8 @@ from optional_deps import (
 from handlers import set_bot_instances
 from pyrogram import Client
 
+from assistant import create_assistant
+
 
 # ============================================================
 # LOGGING
@@ -34,10 +39,19 @@ logging.basicConfig(
         config.log_level,
         logging.INFO,
     ),
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format=(
+        "%(asctime)s - "
+        "%(name)s - "
+        "%(levelname)s - "
+        "%(message)s"
+    ),
     handlers=[
-        logging.FileHandler(config.log_file),
-        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(
+            config.log_file
+        ),
+        logging.StreamHandler(
+            sys.stdout
+        ),
     ],
 )
 
@@ -45,11 +59,14 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================
-# RENDER HEALTH SERVER
+# RENDER
 # ============================================================
 
 PORT = int(
-    os.getenv("PORT", "10000")
+    os.getenv(
+        "PORT",
+        "10000",
+    )
 )
 
 health_runner = None
@@ -61,24 +78,32 @@ async def health(request):
             "status": "ok",
             "service": "SILENT MUSIC BOT",
             "telegram": "online",
+            "voice_chat": (
+                "assistant"
+                if VOICE_CHAT_AVAILABLE
+                else "unavailable"
+            ),
         }
     )
 
 
 async def start_health_server():
-    app = web.Application()
 
-    app.router.add_get(
+    server = web.Application()
+
+    server.router.add_get(
         "/",
         health,
     )
 
-    app.router.add_get(
+    server.router.add_get(
         "/health",
         health,
     )
 
-    runner = web.AppRunner(app)
+    runner = web.AppRunner(
+        server
+    )
 
     await runner.setup()
 
@@ -91,7 +116,7 @@ async def start_health_server():
     await site.start()
 
     logger.info(
-        "🌐 Render health server started on 0.0.0.0:%s",
+        "🌐 Render health server started on port %s",
         PORT,
     )
 
@@ -104,7 +129,9 @@ async def start_health_server():
 
 platform_info = get_platform_info()
 
-logger.info("=== Platform Info ===")
+logger.info(
+    "=== Platform Info ==="
+)
 
 for key, value in platform_info.items():
     logger.info(
@@ -113,11 +140,13 @@ for key, value in platform_info.items():
         value,
     )
 
-logger.info("=====================")
+logger.info(
+    "====================="
+)
 
 
 # ============================================================
-# CONFIG
+# CONFIG VALIDATION
 # ============================================================
 
 errors = validate_config()
@@ -129,6 +158,7 @@ if errors:
     )
 
     for error in errors:
+
         logger.error(
             " - %s",
             error,
@@ -137,6 +167,10 @@ if errors:
     sys.exit(1)
 
 
+# ============================================================
+# VOICE CHAT SUPPORT
+# ============================================================
+
 voice_supported, voice_msg = (
     check_voice_chat_support()
 )
@@ -144,48 +178,49 @@ voice_supported, voice_msg = (
 if VOICE_CHAT_AVAILABLE:
 
     logger.info(
-        "✅ Voice chat: AVAILABLE"
+        "✅ Voice chat support available"
     )
 
 else:
 
     logger.warning(
-        "⚠️ Voice chat: NOT AVAILABLE - %s",
+        "⚠️ Voice chat unavailable: %s",
         voice_msg,
     )
 
 
 # ============================================================
-# GLOBAL RUNTIME OBJECTS
+# GLOBAL OBJECTS
 # ============================================================
 
-app = None
+bot = None
+assistant = None
 pytgcalls = None
 player = None
-
 shutdown_event = None
 
 
 # ============================================================
-# CREATE CLIENTS
+# CREATE RUNTIME
 # ============================================================
 
 def create_runtime():
 
-    global app
+    global bot
+    global assistant
     global pytgcalls
     global player
     global shutdown_event
 
     logger.info(
-        "🔧 Creating runtime objects..."
+        "🔧 Creating runtime..."
     )
 
-    # --------------------------------------------------------
-    # Pyrogram
-    # --------------------------------------------------------
+    # ========================================================
+    # BOT CLIENT
+    # ========================================================
 
-    app = Client(
+    bot = Client(
         config.session_name,
         api_id=config.api_id,
         api_hash=config.api_hash,
@@ -193,23 +228,56 @@ def create_runtime():
     )
 
     logger.info(
-        "✅ Pyrogram object created"
+        "✅ Bot client created"
     )
 
-    # --------------------------------------------------------
-    # IMPORTANT:
-    # PyTgCalls is created INSIDE asyncio.run(main())
-    # so it belongs to the same running event loop.
-    # --------------------------------------------------------
+    # ========================================================
+    # ASSISTANT USER CLIENT
+    # ========================================================
 
     if VOICE_CHAT_AVAILABLE:
 
         try:
 
-            pytgcalls = PyTgCalls(app)
+            assistant = create_assistant(
+                config.api_id,
+                config.api_hash,
+            )
 
             logger.info(
-                "✅ PyTgCalls object created inside main loop"
+                "✅ Assistant client created"
+            )
+
+        except Exception:
+
+            logger.exception(
+                "❌ Could not create assistant"
+            )
+
+            raise
+
+    else:
+
+        assistant = None
+
+    # ========================================================
+    # PYTGCALLS
+    #
+    # IMPORTANT:
+    # PyTgCalls MUST use the assistant USER account.
+    # It must NOT use the Bot client.
+    # ========================================================
+
+    if assistant:
+
+        try:
+
+            pytgcalls = PyTgCalls(
+                assistant
+            )
+
+            logger.info(
+                "✅ PyTgCalls attached to ASSISTANT account"
             )
 
         except Exception:
@@ -220,17 +288,15 @@ def create_runtime():
 
             pytgcalls = None
 
-    else:
+            raise
 
-        logger.warning(
-            "⚠️ PyTgCalls is unavailable"
-        )
+    else:
 
         pytgcalls = None
 
-    # --------------------------------------------------------
-    # Player
-    # --------------------------------------------------------
+    # ========================================================
+    # MUSIC PLAYER
+    # ========================================================
 
     player = MusicPlayer(
         pytgcalls
@@ -240,14 +306,14 @@ def create_runtime():
         "✅ MusicPlayer created"
     )
 
-    # --------------------------------------------------------
-    # Shutdown event
-    # --------------------------------------------------------
+    # ========================================================
+    # SHUTDOWN EVENT
+    # ========================================================
 
     shutdown_event = asyncio.Event()
 
     logger.info(
-        "✅ Shutdown event created"
+        "✅ Runtime created successfully"
     )
 
 
@@ -264,7 +330,7 @@ async def startup():
     )
 
     # ========================================================
-    # CREATE RUNTIME INSIDE CURRENT LOOP
+    # CREATE EVERYTHING IN CURRENT EVENT LOOP
     # ========================================================
 
     create_runtime()
@@ -290,7 +356,7 @@ async def startup():
         raise
 
     # ========================================================
-    # RENDER HEALTH SERVER
+    # HEALTH SERVER
     # ========================================================
 
     try:
@@ -302,33 +368,69 @@ async def startup():
     except Exception:
 
         logger.exception(
-            "❌ Render health server could not start"
+            "❌ Health server failed"
         )
 
         raise
 
     # ========================================================
-    # PYROGRAM
+    # BOT START
     # ========================================================
 
     try:
 
-        await app.start()
+        await bot.start()
 
         logger.info(
-            "✅ Pyrogram client started"
+            "✅ Telegram BOT started"
         )
 
     except Exception:
 
         logger.exception(
-            "❌ Pyrogram failed to start"
+            "❌ Bot failed to start"
         )
 
         raise
 
     # ========================================================
-    # PYTGCALLS
+    # ASSISTANT START
+    # ========================================================
+
+    if assistant:
+
+        try:
+
+            await assistant.start()
+
+            logger.info(
+                "✅ Telegram ASSISTANT started"
+            )
+
+            # ------------------------------------------------
+            # Assistant account information
+            # ------------------------------------------------
+
+            assistant_me = (
+                await assistant.get_me()
+            )
+
+            logger.info(
+                "🎧 Assistant: @%s",
+                assistant_me.username
+                or assistant_me.first_name,
+            )
+
+        except Exception:
+
+            logger.exception(
+                "❌ Assistant failed to start"
+            )
+
+            raise
+
+    # ========================================================
+    # PYTGCALLS START
     # ========================================================
 
     if pytgcalls:
@@ -341,6 +443,10 @@ async def startup():
                 "✅ PyTgCalls started"
             )
 
+            logger.info(
+                "🎧 Voice chat is using ASSISTANT account"
+            )
+
         except Exception:
 
             logger.exception(
@@ -349,14 +455,23 @@ async def startup():
 
             raise
 
+    else:
+
+        logger.warning(
+            "⚠️ PyTgCalls is not available"
+        )
+
     # ========================================================
     # HANDLERS
+    #
+    # handlers still receive BOT as the message client.
+    # PyTgCalls/player use ASSISTANT.
     # ========================================================
 
     try:
 
         set_bot_instances(
-            app,
+            bot,
             pytgcalls,
             player,
             shutdown_event,
@@ -378,19 +493,21 @@ async def startup():
     # BOT INFO
     # ========================================================
 
-    me = await app.get_me()
+    bot_me = await bot.get_me()
 
     logger.info(
         "🤖 Bot: @%s (%s)",
-        me.username,
-        me.first_name,
+        bot_me.username,
+        bot_me.first_name,
     )
 
     logger.info(
         "📋 Admin IDs: %s",
-        config.admin_ids
-        if config.admin_ids
-        else "All users",
+        (
+            config.admin_ids
+            if config.admin_ids
+            else "All users"
+        ),
     )
 
     # ========================================================
@@ -406,16 +523,24 @@ async def startup():
     )
 
     logger.info(
+        "🤖 Bot account: ONLINE"
+    )
+
+    logger.info(
+        "🎧 Assistant account: ONLINE"
+    )
+
+    logger.info(
+        "🎵 Persian commands: ENABLED"
+    )
+
+    logger.info(
+        "🔊 Voice Chat: ASSISTANT ACCOUNT"
+    )
+
+    logger.info(
         "🟢 Render health server: PORT %s",
         PORT,
-    )
-
-    logger.info(
-        "🎵 Persian commands are enabled"
-    )
-
-    logger.info(
-        "🎧 Voice chat system initialized"
     )
 
     logger.info(
@@ -430,15 +555,13 @@ async def startup():
 async def shutdown():
 
     global health_runner
-    global app
-    global pytgcalls
 
     logger.info(
         "🛑 Shutting down..."
     )
 
     # ========================================================
-    # SIGNAL EVENT
+    # EVENT
     # ========================================================
 
     if shutdown_event:
@@ -449,7 +572,7 @@ async def shutdown():
             pass
 
     # ========================================================
-    # LEAVE CALLS
+    # LEAVE VOICE CALLS
     # ========================================================
 
     if pytgcalls:
@@ -459,13 +582,13 @@ async def shutdown():
             await pytgcalls.leave_all_calls()
 
             logger.info(
-                "✅ Left all voice calls"
+                "✅ Assistant left all voice calls"
             )
 
         except Exception:
 
             logger.exception(
-                "Error leaving calls"
+                "Error leaving voice calls"
             )
 
     # ========================================================
@@ -489,33 +612,51 @@ async def shutdown():
             )
 
     # ========================================================
-    # PYROGRAM STOP
+    # ASSISTANT STOP
     # ========================================================
 
-    if app:
+    if assistant:
 
         try:
 
-            if getattr(
-                app,
-                "is_connected",
-                False,
-            ):
+            if assistant.is_connected:
 
-                await app.stop()
+                await assistant.stop()
 
                 logger.info(
-                    "✅ Pyrogram stopped"
+                    "✅ Assistant stopped"
                 )
 
         except Exception:
 
             logger.exception(
-                "Error stopping Pyrogram"
+                "Error stopping assistant"
             )
 
     # ========================================================
-    # HEALTH SERVER STOP
+    # BOT STOP
+    # ========================================================
+
+    if bot:
+
+        try:
+
+            if bot.is_connected:
+
+                await bot.stop()
+
+                logger.info(
+                    "✅ Bot stopped"
+                )
+
+        except Exception:
+
+            logger.exception(
+                "Error stopping bot"
+            )
+
+    # ========================================================
+    # HEALTH SERVER
     # ========================================================
 
     if health_runner:
@@ -547,11 +688,13 @@ async def shutdown():
 
 async def main():
 
+    global shutdown_event
+
     loop = asyncio.get_running_loop()
 
-    # --------------------------------------------------------
+    # ========================================================
     # SIGNALS
-    # --------------------------------------------------------
+    # ========================================================
 
     def request_shutdown():
 
@@ -585,17 +728,13 @@ async def main():
 
             pass
 
-    # --------------------------------------------------------
+    # ========================================================
     # START
-    # --------------------------------------------------------
+    # ========================================================
 
     try:
 
         await startup()
-
-        # ----------------------------------------------------
-        # KEEP BOT ALIVE
-        # ----------------------------------------------------
 
         await shutdown_event.wait()
 
