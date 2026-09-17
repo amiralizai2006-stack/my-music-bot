@@ -9,7 +9,10 @@ from pathlib import Path
 
 import pyrogram.errors
 
-# Compatibility aliases
+# =========================================================
+# PYROGRAM COMPATIBILITY
+# =========================================================
+
 if not hasattr(pyrogram.errors, "GroupcallForbidden"):
     if hasattr(pyrogram.errors, "GroupCallForbidden"):
         pyrogram.errors.GroupcallForbidden = (
@@ -38,6 +41,9 @@ from aiohttp import web
 from pyrogram import Client
 from pytgcalls import PyTgCalls
 
+# =========================================================
+# PATH
+# =========================================================
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -45,10 +51,17 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 
+# =========================================================
+# PROJECT IMPORTS
+# =========================================================
+
 from config import config, validate_config
 from database import db
 from player import MusicPlayer
-from handlers import set_bot_instances
+from handlers import (
+    set_bot_instances,
+    register_handlers,
+)
 
 
 # =========================================================
@@ -123,7 +136,7 @@ if not ASSISTANT_SESSION:
 
 
 # =========================================================
-# CLIENTS
+# TELEGRAM CLIENTS
 # =========================================================
 
 bot = Client(
@@ -149,7 +162,6 @@ assistant = Client(
 
 pytgcalls = None
 player = None
-
 shutdown_event = None
 health_runner = None
 
@@ -223,7 +235,6 @@ async def stop_health_server():
     if health_runner is not None:
 
         try:
-
             await health_runner.cleanup()
 
         except Exception:
@@ -342,10 +353,6 @@ async def startup():
         "PyTgCalls object created"
     )
 
-    # IMPORTANT:
-    # PyTgCalls is started on THIS SAME event loop
-    # used by asyncio.run(main()).
-
     logger.info(
         "Starting PyTgCalls..."
     )
@@ -369,13 +376,13 @@ async def startup():
     )
 
     # -----------------------------------------------------
-    # SHARED SHUTDOWN EVENT
+    # SHUTDOWN EVENT
     # -----------------------------------------------------
 
     shutdown_event = asyncio.Event()
 
     # -----------------------------------------------------
-    # HANDLERS
+    # CONNECT OBJECTS TO HANDLERS
     # -----------------------------------------------------
 
     set_bot_instances(
@@ -385,8 +392,12 @@ async def startup():
         shutdown_event,
     )
 
+    # IMPORTANT:
+    # Actually register Telegram message handlers.
+    register_handlers()
+
     logger.info(
-        "Bot handlers registered"
+        "Bot handlers registered successfully"
     )
 
     # -----------------------------------------------------
@@ -432,6 +443,10 @@ async def startup():
 
     logger.info(
         "ASSISTANT: READY"
+    )
+
+    logger.info(
+        "HANDLERS: READY"
     )
 
     logger.info(
@@ -535,7 +550,7 @@ async def shutdown():
         )
 
     # -----------------------------------------------------
-    # HEALTH
+    # HEALTH SERVER
     # -----------------------------------------------------
 
     await stop_health_server()
@@ -568,9 +583,6 @@ def request_shutdown():
 async def main():
 
     global shutdown_event
-
-    # IMPORTANT:
-    # Everything below runs inside ONE asyncio event loop.
 
     loop = asyncio.get_running_loop()
 
