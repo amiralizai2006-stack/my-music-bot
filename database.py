@@ -3,22 +3,20 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 
-# =========================================================
-# DATABASE
-# =========================================================
-
 DB_PATH = Path("bot_data.db")
 
 
 class Database:
+
     def __init__(self, path=DB_PATH):
         self.path = str(path)
 
-    async def connect(self):
-        return await aiosqlite.connect(self.path)
+    def connect(self):
+        return aiosqlite.connect(self.path)
 
     async def init(self):
-        async with await self.connect() as db:
+
+        async with self.connect() as db:
 
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS subscriptions (
@@ -57,7 +55,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS stats (
                     chat_id INTEGER NOT NULL,
                     user_id INTEGER NOT NULL,
-                    played INTEGER DEFAULT 0,
+                    played INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (chat_id, user_id)
                 )
             """)
@@ -66,7 +64,7 @@ class Database:
 
 
     # =====================================================
-    # SUBSCRIPTION / CHARGE
+    # SUBSCRIPTION
     # =====================================================
 
     async def set_subscription(
@@ -75,9 +73,18 @@ class Database:
         user_id: int,
         days: int
     ):
-        expires = datetime.now(timezone.utc) + timedelta(days=days)
 
-        async with await self.connect() as db:
+        now = datetime.now(timezone.utc)
+
+        current = await self.get_subscription(chat_id)
+
+        if current and current > now:
+            expires = current + timedelta(days=days)
+        else:
+            expires = now + timedelta(days=days)
+
+        async with self.connect() as db:
+
             await db.execute("""
                 INSERT INTO subscriptions
                 (chat_id, activated_by, expires_at)
@@ -100,7 +107,8 @@ class Database:
 
     async def get_subscription(self, chat_id: int):
 
-        async with await self.connect() as db:
+        async with self.connect() as db:
+
             cursor = await db.execute("""
                 SELECT expires_at
                 FROM subscriptions
@@ -113,7 +121,13 @@ class Database:
             return None
 
         try:
-            return datetime.fromisoformat(row[0])
+            value = datetime.fromisoformat(row[0])
+
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+
+            return value
+
         except Exception:
             return None
 
@@ -122,7 +136,7 @@ class Database:
 
         expires = await self.get_subscription(chat_id)
 
-        if not expires:
+        if expires is None:
             return False
 
         return expires > datetime.now(timezone.utc)
@@ -130,7 +144,8 @@ class Database:
 
     async def remove_subscription(self, chat_id: int):
 
-        async with await self.connect() as db:
+        async with self.connect() as db:
+
             await db.execute("""
                 DELETE FROM subscriptions
                 WHERE chat_id=?
@@ -150,7 +165,8 @@ class Database:
         user_id: int
     ):
 
-        async with await self.connect() as db:
+        async with self.connect() as db:
+
             await db.execute("""
                 INSERT INTO required_channels
                 (chat_id, channel, added_by)
@@ -171,7 +187,8 @@ class Database:
 
     async def get_required_channel(self, chat_id: int):
 
-        async with await self.connect() as db:
+        async with self.connect() as db:
+
             cursor = await db.execute("""
                 SELECT channel
                 FROM required_channels
@@ -185,7 +202,8 @@ class Database:
 
     async def remove_required_channel(self, chat_id: int):
 
-        async with await self.connect() as db:
+        async with self.connect() as db:
+
             await db.execute("""
                 DELETE FROM required_channels
                 WHERE chat_id=?
@@ -205,7 +223,8 @@ class Database:
         added_by: int
     ):
 
-        async with await self.connect() as db:
+        async with self.connect() as db:
+
             await db.execute("""
                 INSERT OR REPLACE INTO music_admins
                 (chat_id, user_id, added_by)
@@ -225,7 +244,8 @@ class Database:
         user_id: int
     ):
 
-        async with await self.connect() as db:
+        async with self.connect() as db:
+
             await db.execute("""
                 DELETE FROM music_admins
                 WHERE chat_id=? AND user_id=?
@@ -243,7 +263,8 @@ class Database:
         user_id: int
     ):
 
-        async with await self.connect() as db:
+        async with self.connect() as db:
+
             cursor = await db.execute("""
                 SELECT 1
                 FROM music_admins
@@ -269,7 +290,8 @@ class Database:
         added_by: int
     ):
 
-        async with await self.connect() as db:
+        async with self.connect() as db:
+
             await db.execute("""
                 INSERT INTO music_owner
                 (chat_id, user_id, added_by)
@@ -290,7 +312,8 @@ class Database:
 
     async def get_music_owner(self, chat_id: int):
 
-        async with await self.connect() as db:
+        async with self.connect() as db:
+
             cursor = await db.execute("""
                 SELECT user_id
                 FROM music_owner
@@ -312,7 +335,8 @@ class Database:
         user_id: int
     ):
 
-        async with await self.connect() as db:
+        async with self.connect() as db:
+
             await db.execute("""
                 INSERT INTO stats
                 (chat_id, user_id, played)
@@ -335,7 +359,8 @@ class Database:
         user_id: int
     ):
 
-        async with await self.connect() as db:
+        async with self.connect() as db:
+
             cursor = await db.execute("""
                 SELECT played
                 FROM stats
@@ -352,7 +377,6 @@ class Database:
 
 # =========================================================
 # GLOBAL DATABASE OBJECT
-# main.py expects: from database import db
 # =========================================================
 
 db = Database()
@@ -363,7 +387,7 @@ db = Database()
 # =========================================================
 
 async def init_db():
-    await db.init()
+    return await db.init()
 
 
 async def set_subscription(chat_id, user_id, days):
@@ -376,6 +400,10 @@ async def get_subscription(chat_id):
 
 async def subscription_active(chat_id):
     return await db.subscription_active(chat_id)
+
+
+async def remove_subscription(chat_id):
+    return await db.remove_subscription(chat_id)
 
 
 async def set_required_channel(chat_id, channel, user_id):
