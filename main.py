@@ -9,9 +9,36 @@ from pathlib import Path
 
 from aiohttp import web
 from pyrogram import Client
+import pyrogram.errors
+
+
+# =========================================================
+# Pyrogram / PyTgCalls compatibility
+# =========================================================
+
+if not hasattr(pyrogram.errors, "GroupcallForbidden"):
+    if hasattr(pyrogram.errors, "GroupCallForbidden"):
+        pyrogram.errors.GroupcallForbidden = (
+            pyrogram.errors.GroupCallForbidden
+        )
+
+if not hasattr(pyrogram.errors, "GroupcallInvalid"):
+    if hasattr(pyrogram.errors, "GroupCallInvalid"):
+        pyrogram.errors.GroupcallInvalid = (
+            pyrogram.errors.GroupCallInvalid
+        )
+
 from pytgcalls import PyTgCalls
 
-sys.path.insert(0, str(Path(__file__).parent))
+
+# =========================================================
+# Project imports
+# =========================================================
+
+sys.path.insert(
+    0,
+    str(Path(__file__).parent)
+)
 
 from config import config, validate_config
 from database import db
@@ -19,9 +46,9 @@ from player import MusicPlayer
 from handlers import set_bot_instances
 
 
-# =========================
+# =========================================================
 # Logging
-# =========================
+# =========================================================
 
 logging.basicConfig(
     level=getattr(
@@ -29,30 +56,48 @@ logging.basicConfig(
         config.log_level.upper(),
         logging.INFO,
     ),
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format=(
+        "%(asctime)s - "
+        "%(name)s - "
+        "%(levelname)s - "
+        "%(message)s"
+    ),
     handlers=[
-        logging.FileHandler(config.log_file),
-        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(
+            config.log_file
+        ),
+        logging.StreamHandler(
+            sys.stdout
+        ),
     ],
 )
 
 logger = logging.getLogger(__name__)
 
 
-# =========================
-# Configuration
-# =========================
+# =========================================================
+# Validate configuration
+# =========================================================
 
 errors = validate_config()
 
 if errors:
-    logger.error("Configuration errors:")
+    logger.error(
+        "Configuration errors:"
+    )
 
     for error in errors:
-        logger.error(f"  - {error}")
+        logger.error(
+            "  - %s",
+            error,
+        )
 
     sys.exit(1)
 
+
+# =========================================================
+# Secrets from Render Environment
+# =========================================================
 
 API_ID = config.api_id
 API_HASH = config.api_hash
@@ -63,7 +108,6 @@ ASSISTANT_SESSION = os.getenv(
     "",
 ).strip()
 
-
 if not ASSISTANT_SESSION:
     logger.error(
         "❌ ASSISTANT_SESSION is not configured."
@@ -71,9 +115,9 @@ if not ASSISTANT_SESSION:
     sys.exit(1)
 
 
-# =========================
-# Telegram Bot Client
-# =========================
+# =========================================================
+# Telegram clients
+# =========================================================
 
 bot = Client(
     "telegram_music_bot",
@@ -81,11 +125,6 @@ bot = Client(
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
 )
-
-
-# =========================
-# Assistant User Client
-# =========================
 
 assistant = Client(
     "music_assistant",
@@ -96,37 +135,31 @@ assistant = Client(
 )
 
 
-# =========================
+# =========================================================
 # PyTgCalls
-# =========================
+# =========================================================
 
 pytgcalls = PyTgCalls(
     assistant
 )
-
-
-# =========================
-# Music Player
-# =========================
 
 player = MusicPlayer(
     pytgcalls
 )
 
 
-# =========================
+# =========================================================
 # Shutdown
-# =========================
+# =========================================================
 
 shutdown_event = asyncio.Event()
 
-
-# =========================
-# Render Health Server
-# =========================
-
 health_runner = None
 
+
+# =========================================================
+# Render health server
+# =========================================================
 
 async def health_handler(request):
 
@@ -152,20 +185,20 @@ async def start_health_server():
         )
     )
 
-    health_app = web.Application()
+    app = web.Application()
 
-    health_app.router.add_get(
+    app.router.add_get(
         "/",
         health_handler,
     )
 
-    health_app.router.add_get(
+    app.router.add_get(
         "/health",
         health_handler,
     )
 
     health_runner = web.AppRunner(
-        health_app
+        app
     )
 
     await health_runner.setup()
@@ -179,7 +212,8 @@ async def start_health_server():
     await site.start()
 
     logger.info(
-        f"🌐 Render health server listening on 0.0.0.0:{port}"
+        "🌐 Health server running on port %s",
+        port,
     )
 
 
@@ -195,20 +229,21 @@ async def stop_health_server():
         except Exception as e:
 
             logger.warning(
-                f"Health server shutdown error: {e}"
+                "Health server shutdown error: %s",
+                e,
             )
 
         health_runner = None
 
 
-# =========================
+# =========================================================
 # Startup
-# =========================
+# =========================================================
 
 async def startup():
 
     logger.info(
-        "🚀 Starting Telegram Music Bot..."
+        "🚀 Starting Persian Telegram Music Bot..."
     )
 
     # Database
@@ -218,7 +253,7 @@ async def startup():
         "✅ Database initialized"
     )
 
-    # Render health server
+    # Render web server
     await start_health_server()
 
     # Bot
@@ -243,16 +278,15 @@ async def startup():
         "✅ Assistant account started"
     )
 
-    # Verify assistant identity
     assistant_me = await assistant.get_me()
 
     logger.info(
-        f"👤 Assistant: "
-        f"@{assistant_me.username or 'no_username'} "
-        f"({assistant_me.first_name})"
+        "👤 Assistant: @%s (%s)",
+        assistant_me.username or "no_username",
+        assistant_me.first_name,
     )
 
-    # PyTgCalls
+    # Voice chat
     logger.info(
         "🎵 Starting PyTgCalls..."
     )
@@ -263,7 +297,7 @@ async def startup():
         "✅ PyTgCalls started successfully"
     )
 
-    # Register bot handlers
+    # Handlers
     set_bot_instances(
         bot,
         pytgcalls,
@@ -274,9 +308,9 @@ async def startup():
     bot_me = await bot.get_me()
 
     logger.info(
-        f"🤖 Bot: "
-        f"@{bot_me.username} "
-        f"({bot_me.first_name})"
+        "🤖 Bot: @%s (%s)",
+        bot_me.username,
+        bot_me.first_name,
     )
 
     logger.info(
@@ -284,13 +318,13 @@ async def startup():
     )
 
     logger.info(
-        "🟢 Bot is running continuously."
+        "🟢 Bot is running."
     )
 
 
-# =========================
+# =========================================================
 # Shutdown
-# =========================
+# =========================================================
 
 async def shutdown():
 
@@ -303,7 +337,6 @@ async def shutdown():
 
     shutdown_event.set()
 
-    # Leave voice chats
     try:
 
         await pytgcalls.leave_all_calls()
@@ -315,10 +348,10 @@ async def shutdown():
     except Exception as e:
 
         logger.warning(
-            f"Voice chat shutdown error: {e}"
+            "Voice chat shutdown error: %s",
+            e,
         )
 
-    # Stop PyTgCalls
     try:
 
         await pytgcalls.stop()
@@ -330,10 +363,10 @@ async def shutdown():
     except Exception as e:
 
         logger.warning(
-            f"PyTgCalls stop error: {e}"
+            "PyTgCalls stop error: %s",
+            e,
         )
 
-    # Stop assistant
     try:
 
         if assistant.is_connected:
@@ -347,10 +380,10 @@ async def shutdown():
     except Exception as e:
 
         logger.warning(
-            f"Assistant stop error: {e}"
+            "Assistant shutdown error: %s",
+            e,
         )
 
-    # Stop bot
     try:
 
         if bot.is_connected:
@@ -364,10 +397,10 @@ async def shutdown():
     except Exception as e:
 
         logger.warning(
-            f"Bot stop error: {e}"
+            "Bot shutdown error: %s",
+            e,
         )
 
-    # Health server
     await stop_health_server()
 
     logger.info(
@@ -375,9 +408,9 @@ async def shutdown():
     )
 
 
-# =========================
-# Signals
-# =========================
+# =========================================================
+# Signal handling
+# =========================================================
 
 def signal_handler(
     signum,
@@ -385,7 +418,8 @@ def signal_handler(
 ):
 
     logger.info(
-        f"Received signal {signum}"
+        "Received signal %s",
+        signum,
     )
 
     try:
@@ -401,9 +435,9 @@ def signal_handler(
         pass
 
 
-# =========================
+# =========================================================
 # Main
-# =========================
+# =========================================================
 
 async def main():
 
@@ -445,7 +479,8 @@ async def main():
     except Exception as e:
 
         logger.exception(
-            f"❌ Fatal error: {e}"
+            "❌ Fatal error: %s",
+            e,
         )
 
     finally:
@@ -453,9 +488,9 @@ async def main():
         await shutdown()
 
 
-# =========================
+# =========================================================
 # Run
-# =========================
+# =========================================================
 
 if __name__ == "__main__":
 
@@ -472,7 +507,8 @@ if __name__ == "__main__":
     except Exception as e:
 
         logger.exception(
-            f"❌ Fatal error: {e}"
+            "❌ Fatal error: %s",
+            e,
         )
 
         sys.exit(1)
