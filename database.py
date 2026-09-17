@@ -63,19 +63,9 @@ class Database:
             await db.commit()
 
 
-    # =====================================================
-    # SUBSCRIPTION
-    # =====================================================
-
-    async def set_subscription(
-        self,
-        chat_id: int,
-        user_id: int,
-        days: int
-    ):
+    async def set_subscription(self, chat_id, user_id, days):
 
         now = datetime.now(timezone.utc)
-
         current = await self.get_subscription(chat_id)
 
         if current and current > now:
@@ -105,7 +95,7 @@ class Database:
         return expires
 
 
-    async def get_subscription(self, chat_id: int):
+    async def get_subscription(self, chat_id):
 
         async with self.connect() as db:
 
@@ -121,6 +111,7 @@ class Database:
             return None
 
         try:
+
             value = datetime.fromisoformat(row[0])
 
             if value.tzinfo is None:
@@ -132,7 +123,7 @@ class Database:
             return None
 
 
-    async def subscription_active(self, chat_id: int):
+    async def subscription_active(self, chat_id):
 
         expires = await self.get_subscription(chat_id)
 
@@ -142,7 +133,7 @@ class Database:
         return expires > datetime.now(timezone.utc)
 
 
-    async def remove_subscription(self, chat_id: int):
+    async def remove_subscription(self, chat_id):
 
         async with self.connect() as db:
 
@@ -154,15 +145,11 @@ class Database:
             await db.commit()
 
 
-    # =====================================================
-    # REQUIRED CHANNEL
-    # =====================================================
-
     async def set_required_channel(
         self,
-        chat_id: int,
-        channel: str,
-        user_id: int
+        chat_id,
+        channel,
+        user_id
     ):
 
         async with self.connect() as db:
@@ -185,7 +172,7 @@ class Database:
             await db.commit()
 
 
-    async def get_required_channel(self, chat_id: int):
+    async def get_required_channel(self, chat_id):
 
         async with self.connect() as db:
 
@@ -200,7 +187,7 @@ class Database:
         return row[0] if row else None
 
 
-    async def remove_required_channel(self, chat_id: int):
+    async def remove_required_channel(self, chat_id):
 
         async with self.connect() as db:
 
@@ -212,15 +199,11 @@ class Database:
             await db.commit()
 
 
-    # =====================================================
-    # MUSIC ADMINS
-    # =====================================================
-
     async def add_music_admin(
         self,
-        chat_id: int,
-        user_id: int,
-        added_by: int
+        chat_id,
+        user_id,
+        added_by
     ):
 
         async with self.connect() as db:
@@ -240,8 +223,8 @@ class Database:
 
     async def remove_music_admin(
         self,
-        chat_id: int,
-        user_id: int
+        chat_id,
+        user_id
     ):
 
         async with self.connect() as db:
@@ -259,8 +242,8 @@ class Database:
 
     async def is_music_admin(
         self,
-        chat_id: int,
-        user_id: int
+        chat_id,
+        user_id
     ):
 
         async with self.connect() as db:
@@ -279,15 +262,11 @@ class Database:
         return row is not None
 
 
-    # =====================================================
-    # MUSIC OWNER
-    # =====================================================
-
     async def set_music_owner(
         self,
-        chat_id: int,
-        user_id: int,
-        added_by: int
+        chat_id,
+        user_id,
+        added_by
     ):
 
         async with self.connect() as db:
@@ -310,7 +289,7 @@ class Database:
             await db.commit()
 
 
-    async def get_music_owner(self, chat_id: int):
+    async def get_music_owner(self, chat_id):
 
         async with self.connect() as db:
 
@@ -325,14 +304,10 @@ class Database:
         return row[0] if row else None
 
 
-    # =====================================================
-    # STATISTICS
-    # =====================================================
-
     async def increment_played(
         self,
-        chat_id: int,
-        user_id: int
+        chat_id,
+        user_id
     ):
 
         async with self.connect() as db:
@@ -355,8 +330,8 @@ class Database:
 
     async def get_played(
         self,
-        chat_id: int,
-        user_id: int
+        chat_id,
+        user_id
     ):
 
         async with self.connect() as db:
@@ -375,16 +350,8 @@ class Database:
         return int(row[0]) if row else 0
 
 
-# =========================================================
-# GLOBAL DATABASE OBJECT
-# =========================================================
-
 db = Database()
 
-
-# =========================================================
-# COMPATIBILITY FUNCTIONS
-# =========================================================
 
 async def init_db():
     return await db.init()
