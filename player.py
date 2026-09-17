@@ -36,13 +36,8 @@ class TrackInfo:
     def __post_init__(self):
         self.title = str(self.title or "موزیک").strip() or "موزیک"
 
-        self.performer = str(
-            self.performer or ""
-        ).strip()
-
-        self.artist = str(
-            self.artist or ""
-        ).strip()
+        self.performer = str(self.performer or "").strip()
+        self.artist = str(self.artist or "").strip()
 
         if not self.performer:
             self.performer = self.artist
@@ -50,10 +45,10 @@ class TrackInfo:
         if not self.artist:
             self.artist = self.performer
 
-        self.duration = max(
-            0,
-            int(self.duration or 0),
-        )
+        try:
+            self.duration = max(0, int(self.duration or 0))
+        except (TypeError, ValueError):
+            self.duration = 0
 
     @property
     def display_artist(self) -> str:
@@ -99,16 +94,9 @@ class MusicDownloader:
         "Chrome/131.0 Safari/537.36"
     )
 
-    def __init__(
-        self,
-        download_dir: str = "downloads",
-    ):
+    def __init__(self, download_dir: str = "downloads"):
         self.download_dir = Path(download_dir)
-
-        self.download_dir.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
+        self.download_dir.mkdir(parents=True, exist_ok=True)
 
     # ========================================================
     # SEARCH
@@ -125,10 +113,7 @@ class MusicDownloader:
         if not query:
             return []
 
-        limit = max(
-            1,
-            min(int(limit), 10),
-        )
+        limit = max(1, min(int(limit), 10))
 
         return await asyncio.to_thread(
             self._search_sync,
@@ -139,62 +124,63 @@ class MusicDownloader:
     def _search_sync(
         self,
         query: str,
-        limit: int = 1,
+        limit: int,
     ) -> list[TrackInfo]:
 
         import yt_dlp
 
-        if query.startswith(
-            ("http://", "https://")
-        ):
+        if query.startswith(("http://", "https://")):
             return self._extract_url(
                 yt_dlp,
                 query,
                 limit,
             )
 
-        sources = (
-            (
-                "soundcloud",
-                f"scsearch{limit}:{query}",
-            ),
-            (
-                "youtube",
-                f"ytsearch{limit}:{query}",
-            ),
-        )
+        # اول یوتیوب
+        youtube_source = f"ytsearch{limit}:{query}"
 
-        for source_name, source in sources:
+        try:
+            results = self._youtube_search(
+                yt_dlp,
+                youtube_source,
+                limit,
+            )
 
-            try:
-
-                if source_name == "youtube":
-                    results = self._youtube_search(
-                        yt_dlp,
-                        source,
-                        limit,
-                    )
-                else:
-                    results = self._generic_search(
-                        yt_dlp,
-                        source,
-                        limit,
-                    )
-
-                if results:
-                    logger.info(
-                        "SEARCH OK | source=%s | query=%s",
-                        source_name,
-                        query,
-                    )
-                    return results
-
-            except Exception:
-                logger.exception(
-                    "SEARCH ERROR | source=%s | query=%s",
-                    source_name,
+            if results:
+                logger.info(
+                    "SEARCH OK | youtube | %s",
                     query,
                 )
+                return results
+
+        except Exception:
+            logger.exception(
+                "YOUTUBE SEARCH ERROR | %s",
+                query,
+            )
+
+        # بعد SoundCloud
+        soundcloud_source = f"scsearch{limit}:{query}"
+
+        try:
+            results = self._generic_search(
+                yt_dlp,
+                soundcloud_source,
+                limit,
+            )
+
+            if results:
+                logger.info(
+                    "SEARCH OK | soundcloud | %s",
+                    query,
+                )
+                return results
+
+        except Exception:
+            logger.exception(
+                "SOUNDCLOUD SEARCH ERROR | %s",
+                query,
+            )
 
         logger.warning(
             "NO SEARCH RESULT | %s",
@@ -222,28 +208,16 @@ class MusicDownloader:
             "extract_flat": False,
         }
 
-        try:
-
-            with yt_dlp.YoutubeDL(options) as ydl:
-
-                info = ydl.extract_info(
-                    source,
-                    download=False,
-                )
-
-            return self._info_to_tracks(
-                info,
-                limit,
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info(
+                source,
+                download=False,
             )
 
-        except Exception as exc:
-
-            logger.warning(
-                "GENERIC SEARCH FAILED | %s",
-                exc,
-            )
-
-            return []
+        return self._info_to_tracks(
+            info,
+            limit,
+        )
 
     # ========================================================
     # YOUTUBE SEARCH
@@ -332,12 +306,12 @@ class MusicDownloader:
 
                     "extractor_args": {
                         "youtube": {
-                            "player_client": client,
+                            "player_client": client
                         }
                     },
 
                     "http_headers": {
-                        "User-Agent": self.USER_AGENT,
+                        "User-Agent": self.USER_AGENT
                     },
                 }
 
@@ -418,8 +392,7 @@ class MusicDownloader:
             entries = [info]
         else:
             entries = [
-                item
-                for item in entries
+                item for item in entries
                 if item
             ]
 
@@ -437,55 +410,34 @@ class MusicDownloader:
 
             results.append(
                 TrackInfo(
-                    title=item.get(
-                        "title",
-                        "موزیک",
-                    ),
+                    title=item.get("title", "موزیک"),
 
                     performer=artist,
                     artist=artist,
 
                     duration=int(
-                        item.get(
-                            "duration",
-                            0,
-                        )
-                        or 0
+                        item.get("duration", 0) or 0
                     ),
 
-                    url=item.get(
-                        "url",
-                        "",
-                    )
-                    or "",
-
-                    webpage_url=(
-                        item.get(
-                            "webpage_url",
-                            "",
-                        )
-                        or item.get(
-                            "original_url",
-                            "",
-                        )
+                    url=(
+                        item.get("url", "")
                         or ""
                     ),
 
-                    thumbnail=item.get(
-                        "thumbnail",
-                        "",
-                    )
-                    or "",
+                    webpage_url=(
+                        item.get("webpage_url", "")
+                        or item.get("original_url", "")
+                        or ""
+                    ),
+
+                    thumbnail=(
+                        item.get("thumbnail", "")
+                        or ""
+                    ),
 
                     uploader=(
-                        item.get(
-                            "uploader",
-                            "",
-                        )
-                        or item.get(
-                            "channel",
-                            "",
-                        )
+                        item.get("uploader", "")
+                        or item.get("channel", "")
                         or ""
                     ),
                 )
@@ -563,10 +515,10 @@ class MusicDownloader:
                 "fragment_retries": 3,
                 "continuedl": True,
 
-                "socket_timeout": 20,
+                "socket_timeout": 30,
 
                 "http_headers": {
-                    "User-Agent": self.USER_AGENT,
+                    "User-Agent": self.USER_AGENT
                 },
             }
 
@@ -574,7 +526,7 @@ class MusicDownloader:
 
                 options["extractor_args"] = {
                     "youtube": {
-                        "player_client": client,
+                        "player_client": client
                     }
                 }
 
@@ -601,8 +553,7 @@ class MusicDownloader:
                     if entries:
 
                         entries = [
-                            item
-                            for item in entries
+                            item for item in entries
                             if item
                         ]
 
@@ -622,9 +573,7 @@ class MusicDownloader:
 
                     for item in requested:
 
-                        path = item.get(
-                            "filepath"
-                        )
+                        path = item.get("filepath")
 
                         if path:
                             filepath = path
@@ -633,9 +582,7 @@ class MusicDownloader:
                     if not filepath:
 
                         try:
-                            filepath = ydl.prepare_filename(
-                                info
-                            )
+                            filepath = ydl.prepare_filename(info)
                         except Exception:
                             filepath = None
 
@@ -795,9 +742,7 @@ class MusicDownloader:
 
         if track.filepath:
 
-            path = Path(
-                track.filepath
-            )
+            path = Path(track.filepath)
 
             if self._valid_file(path):
                 return track
@@ -825,14 +770,20 @@ class MusicPlayer:
             download_dir
         )
 
+        # آهنگ در حال پخش
         self.current: dict[int, TrackInfo] = {}
+
+        # صف آهنگ‌ها
         self.queues: dict[int, list[TrackInfo]] = {}
+
+        # تاریخچه
         self.history: dict[int, list[TrackInfo]] = {}
 
         self.paused: set[int] = set()
 
         self.started_at: dict[int, float] = {}
         self.offset: dict[int, int] = {}
+
         self.volume: dict[int, int] = {}
 
         self.locks: dict[int, asyncio.Lock] = {}
@@ -896,7 +847,7 @@ class MusicPlayer:
         return True
 
     # ========================================================
-    # PLAY TRACK
+    # PLAY TRACK DIRECTLY
     # ========================================================
 
     async def play_track(
@@ -947,8 +898,9 @@ class MusicPlayer:
 
                 old = self.current.get(chat_id)
 
+                # ذخیره آهنگ قبلی در تاریخچه
                 if (
-                    old
+                    old is not None
                     and save_history
                     and old is not prepared
                 ):
@@ -960,8 +912,11 @@ class MusicPlayer:
 
                     history.append(old)
 
-                    del history[:-20]
+                    # فقط 20 آهنگ آخر
+                    if len(history) > 20:
+                        del history[:-20]
 
+                # پخش آهنگ جدید
                 if not await self._play_file(
                     chat_id,
                     prepared.filepath,
@@ -994,10 +949,11 @@ class MusicPlayer:
                         "unknown",
                     ),
                 )
+
                 return False
 
     # ========================================================
-    # PLAY / QUEUE
+    # PLAY
     # ========================================================
 
     async def play(
@@ -1006,16 +962,31 @@ class MusicPlayer:
         track: TrackInfo,
     ) -> bool:
 
+        if not track:
+            return False
+
+        # اگر آهنگی در حال پخش است:
+        # آهنگ جدید را قطع نمی‌کنیم.
+        # فقط وارد صف می‌شود.
         if chat_id in self.current:
-            return await self.add_to_queue(
+
+            position = await self.add_to_queue(
                 chat_id,
                 track,
-            ) > 0
+            )
 
+            return position > 0
+
+        # اگر چیزی در حال پخش نیست:
+        # مستقیم پخش شود.
         return await self.play_track(
             chat_id,
             track,
         )
+
+    # ========================================================
+    # ADD TO QUEUE
+    # ========================================================
 
     async def add_to_queue(
         self,
@@ -1023,18 +994,23 @@ class MusicPlayer:
         track: TrackInfo,
     ) -> int:
 
+        if not track:
+            return 0
+
         queue = self._queue(chat_id)
 
         queue.append(track)
 
+        position = len(queue)
+
         logger.info(
             "➕ QUEUED | chat=%s | position=%s | title=%s",
             chat_id,
-            len(queue),
+            position,
             track.title,
         )
 
-        return len(queue)
+        return position
 
     # ========================================================
     # PAUSE
@@ -1054,8 +1030,8 @@ class MusicPlayer:
 
         try:
 
-            self.offset[chat_id] = await self.get_position(
-                chat_id
+            self.offset[chat_id] = (
+                await self.get_position(chat_id)
             )
 
             await self.call.pause(chat_id)
@@ -1075,6 +1051,7 @@ class MusicPlayer:
                 "PAUSE FAILED | chat=%s",
                 chat_id,
             )
+
             return False
 
     # ========================================================
@@ -1113,10 +1090,11 @@ class MusicPlayer:
                 "RESUME FAILED | chat=%s",
                 chat_id,
             )
+
             return False
 
     # ========================================================
-    # STOP
+    # STOP / END
     # ========================================================
 
     async def stop(
@@ -1131,7 +1109,10 @@ class MusicPlayer:
 
         try:
 
-            await self.call.leave_call(chat_id)
+            await self.call.leave_call(
+                chat_id
+            )
+
             success = True
 
         except Exception:
@@ -1141,20 +1122,42 @@ class MusicPlayer:
                 await self.call.leave_group_call(
                     chat_id
                 )
+
                 success = True
 
             except Exception:
+
                 logger.warning(
                     "LEAVE CALL FAILED | chat=%s",
                     chat_id,
                     exc_info=True,
                 )
 
-        self.current.pop(chat_id, None)
-        self.queues.pop(chat_id, None)
-        self.paused.discard(chat_id)
-        self.started_at.pop(chat_id, None)
-        self.offset.pop(chat_id, None)
+        # اتمام واقعی:
+        # آهنگ فعلی + صف پاک می‌شوند.
+        self.current.pop(
+            chat_id,
+            None,
+        )
+
+        self.queues.pop(
+            chat_id,
+            None,
+        )
+
+        self.paused.discard(
+            chat_id
+        )
+
+        self.started_at.pop(
+            chat_id,
+            None,
+        )
+
+        self.offset.pop(
+            chat_id,
+            None,
+        )
 
         logger.info(
             "⏹️ STOPPED | chat=%s",
@@ -1172,23 +1175,56 @@ class MusicPlayer:
         chat_id: int,
     ) -> Optional[TrackInfo]:
 
-        queue = self._queue(chat_id)
+        queue = self.queues.get(
+            chat_id,
+            [],
+        )
 
+        # صف خالی است
         if not queue:
-            await self.stop(chat_id)
+
+            await self.stop(
+                chat_id
+            )
+
             return None
 
+        # اولین آهنگ صف
         track = queue.pop(0)
 
-        if await self.play_track(
+        logger.info(
+            "⏭️ NEXT | chat=%s | title=%s | remaining=%s",
+            chat_id,
+            track.title,
+            len(queue),
+        )
+
+        # آهنگ بعدی را مستقیم جایگزین می‌کنیم.
+        # آهنگ قبلی وارد history می‌شود.
+        success = await self.play_track(
             chat_id,
             track,
             save_history=True,
-        ):
-            return self.current.get(chat_id)
+        )
 
-        # اگر پخش آهنگ بعدی شکست خورد،
-        # بقیه صف را نگه می‌داریم.
+        if success:
+
+            return self.current.get(
+                chat_id
+            )
+
+        # اگر پخش شکست خورد،
+        # آهنگ را برگردانیم اول صف
+        queue.insert(
+            0,
+            track,
+        )
+
+        logger.error(
+            "NEXT FAILED | returned track to queue | chat=%s",
+            chat_id,
+        )
+
         return None
 
     # ========================================================
@@ -1210,12 +1246,16 @@ class MusicPlayer:
 
         track = history.pop()
 
-        if await self.play_track(
+        success = await self.play_track(
             chat_id,
             track,
             save_history=False,
-        ):
-            return self.current.get(chat_id)
+        )
+
+        if success:
+            return self.current.get(
+                chat_id
+            )
 
         history.append(track)
 
@@ -1230,15 +1270,6 @@ class MusicPlayer:
         chat_id: int,
         seconds: int,
     ) -> bool:
-
-        """
-        تغییر موقعیت پخش.
-
-        PyTgCalls در این لایه API عمومی seek مستقیم ندارد،
-        بنابراین برای جلوگیری از خراب شدن استریم، seek به شکل
-        restart از ابتدای فایل انجام نمی‌شود و فقط زمانی
-        فعال می‌شود که پیاده‌سازی call یک متد seek داشته باشد.
-        """
 
         if (
             self.call is None
@@ -1257,8 +1288,8 @@ class MusicPlayer:
 
         try:
 
-            current_position = await self.get_position(
-                chat_id
+            current_position = (
+                await self.get_position(chat_id)
             )
 
             target = max(
@@ -1300,6 +1331,7 @@ class MusicPlayer:
                 "SEEK FAILED | chat=%s",
                 chat_id,
             )
+
             return False
 
     # ========================================================
@@ -1315,6 +1347,7 @@ class MusicPlayer:
             return 0
 
         if chat_id in self.paused:
+
             return int(
                 self.offset.get(
                     chat_id,
@@ -1322,7 +1355,9 @@ class MusicPlayer:
                 )
             )
 
-        started = self.started_at.get(chat_id)
+        started = self.started_at.get(
+            chat_id
+        )
 
         if started is None:
             return 0
@@ -1366,10 +1401,10 @@ class MusicPlayer:
         volume: int,
     ) -> bool:
 
-        if self.call is None:
-            return False
-
-        if chat_id not in self.current:
+        if (
+            self.call is None
+            or chat_id not in self.current
+        ):
             return False
 
         try:
@@ -1402,6 +1437,7 @@ class MusicPlayer:
                 "VOLUME FAILED | chat=%s",
                 chat_id,
             )
+
             return False
 
     def get_volume(
@@ -1423,10 +1459,12 @@ class MusicPlayer:
         chat_id: int,
     ) -> Optional[TrackInfo]:
 
-        return self.current.get(chat_id)
+        return self.current.get(
+            chat_id
+        )
 
     # ========================================================
-    # QUEUE
+    # QUEUE LIST
     # ========================================================
 
     def get_queue(
@@ -1440,6 +1478,51 @@ class MusicPlayer:
                 [],
             )
         )
+
+    # ========================================================
+    # QUEUE COUNT
+    # ========================================================
+
+    def queue_count(
+        self,
+        chat_id: int,
+    ) -> int:
+
+        return len(
+            self.queues.get(
+                chat_id,
+                [],
+            )
+        )
+
+    # ========================================================
+    # CLEAR QUEUE ONLY
+    # ========================================================
+
+    def clear_queue(
+        self,
+        chat_id: int,
+    ) -> int:
+
+        queue = self.queues.get(
+            chat_id,
+            [],
+        )
+
+        count = len(queue)
+
+        self.queues.pop(
+            chat_id,
+            None,
+        )
+
+        logger.info(
+            "🧹 QUEUE CLEARED | chat=%s | count=%s",
+            chat_id,
+            count,
+        )
+
+        return count
 
     # ========================================================
     # STATE
@@ -1465,17 +1548,12 @@ class MusicPlayer:
             and chat_id in self.paused
         )
 
-    def queue_count(
+    def has_current(
         self,
         chat_id: int,
-    ) -> int:
+    ) -> bool:
 
-        return len(
-            self.queues.get(
-                chat_id,
-                [],
-            )
-        )
+        return chat_id in self.current
 
     # ========================================================
     # CLEANUP
@@ -1486,18 +1564,65 @@ class MusicPlayer:
         chat_id: int,
     ):
 
-        self.current.pop(chat_id, None)
-        self.queues.pop(chat_id, None)
-        self.history.pop(chat_id, None)
+        self.current.pop(
+            chat_id,
+            None,
+        )
 
-        self.paused.discard(chat_id)
+        self.queues.pop(
+            chat_id,
+            None,
+        )
 
-        self.started_at.pop(chat_id, None)
-        self.offset.pop(chat_id, None)
-        self.volume.pop(chat_id, None)
-        self.locks.pop(chat_id, None)
+        self.history.pop(
+            chat_id,
+            None,
+        )
+
+        self.paused.discard(
+            chat_id
+        )
+
+        self.started_at.pop(
+            chat_id,
+            None,
+        )
+
+        self.offset.pop(
+            chat_id,
+            None,
+        )
+
+        self.volume.pop(
+            chat_id,
+            None,
+        )
+
+        self.locks.pop(
+            chat_id,
+            None,
+        )
 
         logger.info(
             "🧹 CLEANUP | chat=%s",
             chat_id,
         )
+
+رفتار این نسخه
+
+- "پخش آهنگ اول" → مستقیم پخش می‌شود.
+- وقتی آهنگ اول در حال پخش است و "پخش آهنگ دوم" بزنی → آهنگ اول قطع نمی‌شود و دومی می‌رود صف.
+- "پخش آهنگ سوم" → می‌رود جایگاه دوم صف.
+- "بعدی" → آهنگ فعلی عوض می‌شود و اولین آهنگ صف پخش می‌شود.
+- اگر "بعدی" را وقتی صف خالی است بزنی → پخش تمام می‌شود.
+- "مکث" → مکث.
+- "ادامه" / "ازسرگیری" → ادامه.
+- "اتمام" → پخش و صف پاک می‌شوند.
+- "صف" → می‌تواند "get_queue()" را بخواند.
+- "قبلی" → از history آهنگ قبلی را برمی‌گرداند.
+- اگر دانلود آهنگ بعدی شکست بخورد، از صف حذف نمی‌شود و دوباره قابل پخش است.
+- جستجوی "پخش اسم آهنگ" هم در این نسخه با "ytsearch" به شکل مستقیم و استاندارد انجام می‌شود.
+
+یک نکته مهم: این "player.py" به‌تنهایی کافی نیست که وقتی آهنگ خودش تمام شد، خودکار برود سراغ آهنگ بعدی؛ برای آن باید callback/event پایان استریم در "main.py" یا "handlers.py" هم وصل باشد. اما دستور "بعدی" با این نسخه صف را درست کنترل می‌کند.
+
+بعد از جایگزینی، فعلاً فایل دیگری را دست نزن. اول تست کنیم "پخش" → "پخش آهنگ دوم" → "صف" → "بعدی" درست کار می‌کند؛ بعد می‌رویم سراغ دستورات "ترفیع موزیک" و "معاون پلیر".
