@@ -31,7 +31,11 @@ from assistant import create_assistant
 # ============================================================
 
 logging.basicConfig(
-    level=getattr(logging, config.log_level, logging.INFO),
+    level=getattr(
+        logging,
+        config.log_level,
+        logging.INFO,
+    ),
     format=(
         "%(asctime)s - "
         "%(name)s - "
@@ -56,6 +60,7 @@ health_runner = None
 
 
 async def health(request):
+
     return web.json_response(
         {
             "status": "ok",
@@ -106,7 +111,12 @@ platform_info = get_platform_info()
 logger.info("=== Platform Info ===")
 
 for key, value in platform_info.items():
-    logger.info("%s: %s", key, value)
+
+    logger.info(
+        "%s: %s",
+        key,
+        value,
+    )
 
 logger.info("=====================")
 
@@ -119,10 +129,16 @@ errors = validate_config()
 
 if errors:
 
-    logger.error("Configuration errors:")
+    logger.error(
+        "Configuration errors:"
+    )
 
     for error in errors:
-        logger.error(" - %s", error)
+
+        logger.error(
+            " - %s",
+            error,
+        )
 
     sys.exit(1)
 
@@ -131,11 +147,15 @@ if errors:
 # VOICE CHAT SUPPORT
 # ============================================================
 
-voice_supported, voice_msg = check_voice_chat_support()
+voice_supported, voice_msg = (
+    check_voice_chat_support()
+)
 
 if VOICE_CHAT_AVAILABLE:
 
-    logger.info("✅ Voice chat support available")
+    logger.info(
+        "✅ Voice chat support available"
+    )
 
 else:
 
@@ -168,7 +188,9 @@ def create_runtime():
     global player
     global shutdown_event
 
-    logger.info("🔧 Creating runtime...")
+    logger.info(
+        "🔧 Creating runtime..."
+    )
 
     # ========================================================
     # BOT CLIENT
@@ -181,7 +203,9 @@ def create_runtime():
         bot_token=config.bot_token,
     )
 
-    logger.info("✅ Bot client created")
+    logger.info(
+        "✅ Bot client created"
+    )
 
     # ========================================================
     # ASSISTANT USER CLIENT
@@ -220,6 +244,9 @@ def create_runtime():
 
         try:
 
+            # IMPORTANT:
+            # PyTgCalls must be attached directly
+            # to the assistant user client.
             pytgcalls = PyTgCalls(
                 assistant
             )
@@ -246,13 +273,38 @@ def create_runtime():
     # MUSIC PLAYER
     # ========================================================
 
-    player = MusicPlayer(
-        pytgcalls
-    )
+    if pytgcalls:
 
-    logger.info(
-        "✅ MusicPlayer created"
-    )
+        try:
+
+            # IMPORTANT:
+            # MusicPlayer expects the call object
+            # through the "call" parameter.
+            player = MusicPlayer(
+                call=pytgcalls
+            )
+
+            logger.info(
+                "✅ MusicPlayer created with PyTgCalls"
+            )
+
+        except Exception:
+
+            logger.exception(
+                "❌ Failed to create MusicPlayer"
+            )
+
+            raise
+
+    else:
+
+        player = MusicPlayer(
+            call=None
+        )
+
+        logger.warning(
+            "⚠️ MusicPlayer created without voice call"
+        )
 
     # ========================================================
     # SHUTDOWN EVENT
@@ -289,8 +341,6 @@ async def startup():
 
     try:
 
-        # database.py uses normal synchronous SQLite
-        # initialization, so DO NOT use await db.init()
         init_db()
 
         logger.info(
@@ -363,8 +413,10 @@ async def startup():
 
             logger.info(
                 "🎧 Assistant: @%s",
-                assistant_me.username
-                or assistant_me.first_name,
+                (
+                    assistant_me.username
+                    or assistant_me.first_name
+                ),
             )
 
         except Exception:
@@ -510,8 +562,11 @@ async def shutdown():
     if shutdown_event:
 
         try:
+
             shutdown_event.set()
+
         except Exception:
+
             pass
 
     # ========================================================
@@ -648,8 +703,11 @@ async def main():
         if shutdown_event:
 
             try:
+
                 shutdown_event.set()
+
             except Exception:
+
                 pass
 
     for sig in (
