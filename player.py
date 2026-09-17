@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from datetime import datetime
-from pathlib import Path
 from typing import Optional, Any
 
 from pyrogram import Client, filters
@@ -16,7 +16,61 @@ from pyrogram.types import (
 
 from player import TrackInfo
 
+# =========================================================
+# Database
+# =========================================================
+
+from database import (
+    init_db,
+    add_user,
+    increase_play_count,
+    get_user_count,
+    get_total_plays,
+    set_owner,
+    get_owner,
+    is_owner,
+    add_music_admin,
+    remove_music_admin,
+    is_music_admin,
+    get_music_admins,
+    activate_subscription,
+    deactivate_subscription,
+    is_subscription_active,
+    subscription_days_left,
+    get_subscription,
+    get_required_channel,
+    get_support_username,
+)
+
 logger = logging.getLogger(__name__)
+
+# =========================================================
+# Database initialization
+# =========================================================
+
+try:
+    init_db()
+except Exception:
+    logger.exception("Database initialization failed")
+
+# =========================================================
+# Environment configuration
+# =========================================================
+
+try:
+    OWNER_ID = int(os.getenv("OWNER_ID", "0") or 0)
+except ValueError:
+    OWNER_ID = 0
+
+SUPPORT_USERNAME = (
+    get_support_username()
+    or os.getenv("SUPPORT_USERNAME", "")
+)
+
+REQUIRED_CHANNEL = (
+    get_required_channel()
+    or os.getenv("REQUIRED_CHANNEL", "")
+)
 
 # =========================================================
 # نمونه‌های اصلی
@@ -27,16 +81,124 @@ player: Any = None
 pytgcalls: Any = None
 shutdown_event: Any = None
 
-SUPPORT_USERNAME = ""
-REQUIRED_CHANNEL = ""
-
 # =========================================================
-# آمار و مدیریت
+# آمار محلی
 # =========================================================
 
 user_stats: dict[int, dict[str, Any]] = {}
-music_admins: set[int] = set()
-music_owner_id: Optional[int] = None
+
+# =========================================================
+# مالک اولیه از ENV
+# =========================================================
+
+try:
+    if OWNER_ID and not get_owner():
+        set_owner(OWNER_ID)
+except Exception:
+    logger.exception("Could not initialize owner")
+
+# =========================================================
+# دسترسی‌ها
+# =========================================================
+
+def _is_owner(user_id: Optional[int]) -> bool:
+    if not user_id:
+        return False
+
+    try:
+        return bool(is_owner(int(user_id)))
+    except Exception:
+        return False
+
+
+def _is_music_admin(user_id: Optional[int]) -> bool:
+    if not user_id:
+        return False
+
+    try:
+        return bool(is_music_admin(int(user_id)))
+    except Exception:
+        return False
+
+
+def _has_management_access(user_id: Optional[int]) -> bool:
+    return _is_owner(user_id)
+
+
+def _has_music_access(user_id: Optional[int]) -> bool:
+    """
+    مالک و مدیر موزیک همیشه دسترسی دارند.
+    کاربران عادی باید اشتراک فعال داشته باشند.
+    """
+
+    if not user_id:
+        return False
+
+    if _is_owner(user_id):
+        return True
+
+    if _is_music_admin(user_id):
+        return True
+
+    try:
+        return bool(is_subscription_active(int(user_id)))
+    except Exception:
+        return False
+
+
+async def _ensure_music_access(
+    message: Message,
+) -> bool:
+    user = message.from_user
+
+    if not user:
+        return True
+
+    if _has_music_access(user.id):
+        return True
+
+    try:
+        days = subscription_days_left(user.id)
+    except Exception:
+        days = 0
+
+    if days and days > 0:
+        text = (
+            "🔐 **اشتراک شما فعال است.**\n\n"
+            f"⏳ زمان باقی‌مانده: `{days}` روز"
+        )
+    else:
+        text = (
+            "🔒 **دسترسی شما فعال نیست.**\n\n"
+            "برای استفاده از موزیک پلیر باید اشتراک فعال داشته باشید.\n\n"
+            "مدت‌های قابل فعال‌سازی:\n"
+            "• `شارژ 10`\n"
+            "• `شارژ 30`\n"
+            "• `شارژ 60`\n"
+            "• `شارژ 90`\n"
+            "• `شارژ 180`"
+        )
+
+    await message.reply_text(text)
+    return False
+
+
+async def _ensure_callback_access(
+    query: CallbackQuery,
+) -> bool:
+    user = query.from_user
+
+    if not user:
+        return True
+
+    if _has_music_access(user.id):
+        return True
+
+    await query.answer(
+        "🔒 اشتراک شما فعال نیست.",
+        show_alert=True,
+    )
+    return False
 
 
 # =========================================================
@@ -51,16 +213,45 @@ def _user_stats(user_id: int) -> dict[str, Any]:
         }
 
     user_stats[user_id]["last_seen"] = datetime.utcnow()
+
     return user_stats[user_id]
+
+
+def _register_user(message: Message):
+    if not message.from_user:
+        return
+
+    user = message.from_user
+
+    _user_stats(user.id)
+
+    try:
+        add_user(
+            user.id,
+            user.username or "",
+            user.first_name or "",
+        )
+    except Exception:
+        logger.exception(
+            "Could not register user %s",
+            user.id,
+        )
 
 
 def _increase_play(user_id: int):
     stats = _user_stats(user_id)
     stats["plays"] += 1
 
+    try:
+        increase_play_count(user_id)
+    except Exception:
+        logger.exception(
+            "Could not increase database play count"
+        )
+
 
 # =========================================================
-# ثبت نمونه‌های اصلی
+# نمونه‌های اصلی
 # =========================================================
 
 def set_bot_instances(
@@ -78,6 +269,11 @@ def set_bot_instances(
     player = player_instance
     pytgcalls = pytgcalls_instance
     shutdown_event = shutdown_event_instance
+
+    try:
+        init_db()
+    except Exception:
+        logger.exception("Database init failed")
 
 
 # =========================================================
@@ -109,7 +305,7 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    "🔐 عضویت",
+                    "🔐 اشتراک",
                     callback_data="membership",
                 ),
                 InlineKeyboardButton(
@@ -232,7 +428,10 @@ def player_text(track: Optional[TrackInfo]) -> str:
         duration = int(track.duration)
         minutes = duration // 60
         seconds = duration % 60
-        text += f"\n⏱ مدت: `{minutes}:{seconds:02d}`"
+
+        text += (
+            f"\n⏱ مدت: `{minutes}:{seconds:02d}`"
+        )
 
     return text
 
@@ -301,8 +500,11 @@ async def _get_status(chat_id: int):
 
     try:
         return await player.get_status(chat_id)
+
     except Exception:
-        logger.exception("Could not get player status")
+        logger.exception(
+            "Could not get player status"
+        )
 
         return {
             "playing": False,
@@ -326,8 +528,6 @@ async def _download_and_play(
         return False, "❌ پلیر آماده نیست."
 
     try:
-        # player.play در نسخه جدید خودش
-        # اگر آهنگی در حال پخش باشد، آهنگ را وارد صف می‌کند.
         ok = await player.play(
             chat_id,
             track,
@@ -358,7 +558,7 @@ async def _download_and_play(
 
 
 # =========================================================
-# سازگاری برای فراخوانی متدهای پلیر
+# سازگاری متدهای پلیر
 # =========================================================
 
 async def _player_method(
@@ -409,17 +609,14 @@ async def start_handler(
     client: Client,
     message: Message,
 ):
-    if message.from_user:
-        _user_stats(
-            message.from_user.id
-        )
+    _register_user(message)
 
     text = (
         "🎵 **موزیک پلیر فارسی**\n\n"
-        "برای پخش موزیک می‌توانید:\n\n"
+        "برای پخش موزیک:\n\n"
         "• `پخش نام آهنگ`\n"
-        "• روی یک آهنگ ریپلای کنید و `پخش` بزنید\n\n"
-        "دستورات اصلی:\n"
+        "• روی فایل صوتی ریپلای کنید و `پخش` بزنید\n\n"
+        "دستورات:\n"
         "▶️ پخش\n"
         "⏸ مکث\n"
         "▶️ ادامه\n"
@@ -429,7 +626,9 @@ async def start_handler(
         "📊 وضعیت\n"
         "🔊 صدا\n"
         "⏩ جلو\n"
-        "⏪ عقب"
+        "⏪ عقب\n"
+        "📋 صف\n"
+        "🔐 اشتراک"
     )
 
     await message.reply_text(
@@ -449,10 +648,7 @@ async def persian_start_handler(
     client: Client,
     message: Message,
 ):
-    if message.from_user:
-        _user_stats(
-            message.from_user.id
-        )
+    _register_user(message)
 
     await message.reply_text(
         "🎵 **موزیک پلیر آماده است.**\n\n"
@@ -474,6 +670,8 @@ async def bot_handler(
     client: Client,
     message: Message,
 ):
+    _register_user(message)
+
     await message.reply_text(
         "🎵 **موزیک پلیر فعال است.**\n\n"
         "برای پخش موزیک بنویسید:\n"
@@ -492,6 +690,8 @@ async def help_handler(
     client: Client,
     message: Message,
 ):
+    _register_user(message)
+
     await message.reply_text(
         "📚 **دستورات موزیک**\n\n"
         "🎵 `پخش آهنگ`\n"
@@ -506,7 +706,8 @@ async def help_handler(
         "🔊 `صدا 100`\n"
         "📋 `صف`\n"
         "📊 `وضعیت`\n"
-        "🆔 `آیدی`"
+        "🆔 `آیدی`\n"
+        "🔐 `اشتراک`"
     )
 
 
@@ -521,6 +722,11 @@ async def play_handler(
     client: Client,
     message: Message,
 ):
+    _register_user(message)
+
+    if not await _ensure_music_access(message):
+        return
+
     if not player:
         await message.reply_text(
             "❌ پلیر آماده نیست."
@@ -569,9 +775,7 @@ async def play_handler(
             )
 
             if not ok:
-                await message.reply_text(
-                    result
-                )
+                await message.reply_text(result)
                 return
 
             if result == "queued":
@@ -583,7 +787,7 @@ async def play_handler(
 
                 await message.reply_text(
                     f"➕ موزیک به صف اضافه شد.\n"
-                    f"📋 جایگاه تقریبی در صف: `{queue_size}`\n\n"
+                    f"📋 جایگاه تقریبی: `{queue_size}`\n\n"
                     f"{player_text(track)}"
                 )
 
@@ -644,9 +848,7 @@ async def play_handler(
         )
 
         if not ok:
-            await message.reply_text(
-                result
-            )
+            await message.reply_text(result)
             return
 
         if result == "queued":
@@ -695,6 +897,11 @@ async def queue_handler(
     client: Client,
     message: Message,
 ):
+    _register_user(message)
+
+    if not await _ensure_music_access(message):
+        return
+
     if not player:
         await message.reply_text(
             "❌ پلیر آماده نیست."
@@ -753,6 +960,9 @@ async def pause_handler(
     client: Client,
     message: Message,
 ):
+    if not await _ensure_music_access(message):
+        return
+
     result = await _player_method(
         "pause",
         message.chat.id,
@@ -779,6 +989,9 @@ async def resume_handler(
     client: Client,
     message: Message,
 ):
+    if not await _ensure_music_access(message):
+        return
+
     result = await _player_method(
         "resume",
         message.chat.id,
@@ -805,6 +1018,9 @@ async def stop_handler(
     client: Client,
     message: Message,
 ):
+    if not await _ensure_music_access(message):
+        return
+
     result = await _player_method(
         "stop",
         message.chat.id,
@@ -831,6 +1047,9 @@ async def next_handler(
     client: Client,
     message: Message,
 ):
+    if not await _ensure_music_access(message):
+        return
+
     track = await _player_method(
         "next",
         message.chat.id,
@@ -860,6 +1079,9 @@ async def previous_handler(
     client: Client,
     message: Message,
 ):
+    if not await _ensure_music_access(message):
+        return
+
     track = await _player_method(
         "previous",
         message.chat.id,
@@ -889,6 +1111,9 @@ async def forward_handler(
     client: Client,
     message: Message,
 ):
+    if not await _ensure_music_access(message):
+        return
+
     match = re.match(
         r"^جلو(?:\s+(\d+))?$",
         message.text or "",
@@ -897,9 +1122,9 @@ async def forward_handler(
     seconds = 10
 
     if match and match.group(1):
-        seconds = int(
-            match.group(1)
-        )
+        seconds = int(match.group(1))
+
+    seconds = max(1, min(600, seconds))
 
     result = await _player_method(
         "forward",
@@ -913,7 +1138,7 @@ async def forward_handler(
         )
     else:
         await message.reply_text(
-            "❌ جلو بردن موزیک پشتیبانی نمی‌شود."
+            "❌ جلو بردن موزیک انجام نشد."
         )
 
 
@@ -928,6 +1153,9 @@ async def backward_handler(
     client: Client,
     message: Message,
 ):
+    if not await _ensure_music_access(message):
+        return
+
     match = re.match(
         r"^عقب(?:\s+(\d+))?$",
         message.text or "",
@@ -936,9 +1164,9 @@ async def backward_handler(
     seconds = 10
 
     if match and match.group(1):
-        seconds = int(
-            match.group(1)
-        )
+        seconds = int(match.group(1))
+
+    seconds = max(1, min(600, seconds))
 
     result = await _player_method(
         "backward",
@@ -952,7 +1180,7 @@ async def backward_handler(
         )
     else:
         await message.reply_text(
-            "❌ عقب بردن موزیک پشتیبانی نمی‌شود."
+            "❌ عقب بردن موزیک انجام نشد."
         )
 
 
@@ -967,31 +1195,25 @@ async def volume_handler(
     client: Client,
     message: Message,
 ):
+    if not await _ensure_music_access(message):
+        return
+
     match = re.match(
         r"^صدا(?:\s+(\d+))?$",
         message.text or "",
     )
 
     if not match or not match.group(1):
-        try:
-            status = await _get_status(
-                message.chat.id
-            )
+        status = await _get_status(
+            message.chat.id
+        )
 
-            await message.reply_text(
-                f"🔊 صدای فعلی: `{status['volume']}`"
-            )
-
-        except Exception:
-            await message.reply_text(
-                "🔊 صدای فعلی: `100`"
-            )
-
+        await message.reply_text(
+            f"🔊 صدای فعلی: `{status.get('volume', 100)}`"
+        )
         return
 
-    volume = int(
-        match.group(1)
-    )
+    volume = int(match.group(1))
 
     volume = max(
         0,
@@ -1028,6 +1250,8 @@ async def id_handler(
     client: Client,
     message: Message,
 ):
+    _register_user(message)
+
     user_id = (
         message.from_user.id
         if message.from_user
@@ -1054,13 +1278,14 @@ async def status_handler(
     client: Client,
     message: Message,
 ):
+    if not await _ensure_music_access(message):
+        return
+
     status = await _get_status(
         message.chat.id
     )
 
-    track = status.get(
-        "track"
-    )
+    track = status.get("track")
 
     if not track:
         await message.reply_text(
@@ -1096,6 +1321,190 @@ async def status_handler(
 
 
 # =========================================================
+# شارژ اشتراک
+#
+# روی پیام کاربر ریپلای کن:
+# شارژ 10
+# شارژ 30
+# شارژ 60
+# شارژ 90
+# شارژ 180
+# =========================================================
+
+@Client.on_message(
+    filters.regex(
+        r"^شارژ\s+(10|30|60|90|180)$"
+    )
+)
+async def charge_handler(
+    client: Client,
+    message: Message,
+):
+    _register_user(message)
+
+    if not message.from_user:
+        return
+
+    if not _is_owner(message.from_user.id):
+        await message.reply_text(
+            "❌ فقط مالک ربات می‌تواند اشتراک کاربران را فعال کند."
+        )
+        return
+
+    if not message.reply_to_message:
+        await message.reply_text(
+            "❌ برای شارژ، روی پیام کاربر ریپلای کنید.\n\n"
+            "مثال:\n"
+            "`شارژ 30`"
+        )
+        return
+
+    target = message.reply_to_message.from_user
+
+    if not target:
+        await message.reply_text(
+            "❌ کاربر مقصد پیدا نشد."
+        )
+        return
+
+    match = re.match(
+        r"^شارژ\s+(10|30|60|90|180)$",
+        message.text or "",
+    )
+
+    if not match:
+        return
+
+    days = int(match.group(1))
+
+    try:
+        activate_subscription(
+            target.id,
+            days,
+        )
+
+        remaining = subscription_days_left(
+            target.id
+        )
+
+        await message.reply_text(
+            "✅ **اشتراک با موفقیت فعال شد.**\n\n"
+            f"👤 کاربر: `{target.id}`\n"
+            f"⏳ مدت اضافه‌شده: `{days}` روز\n"
+            f"📅 زمان باقی‌مانده: `{remaining}` روز"
+        )
+
+    except Exception:
+        logger.exception(
+            "Could not activate subscription"
+        )
+
+        await message.reply_text(
+            "❌ فعال‌سازی اشتراک انجام نشد."
+        )
+
+
+# =========================================================
+# وضعیت اشتراک
+# =========================================================
+
+@Client.on_message(
+    filters.regex(r"^(اشتراک|وضعیت اشتراک)$")
+)
+async def subscription_status_handler(
+    client: Client,
+    message: Message,
+):
+    _register_user(message)
+
+    if not message.from_user:
+        return
+
+    user_id = message.from_user.id
+
+    if _is_owner(user_id):
+        await message.reply_text(
+            "👑 شما مالک ربات هستید و محدودیت اشتراک ندارید."
+        )
+        return
+
+    try:
+        active = is_subscription_active(user_id)
+        days = subscription_days_left(user_id)
+
+        if active and days > 0:
+            await message.reply_text(
+                "🔐 **اشتراک شما فعال است.**\n\n"
+                f"⏳ زمان باقی‌مانده: `{days}` روز"
+            )
+        else:
+            await message.reply_text(
+                "🔒 **اشتراک شما فعال نیست.**\n\n"
+                "برای فعال‌سازی با مالک ربات تماس بگیرید."
+            )
+
+    except Exception:
+        logger.exception(
+            "Could not check subscription"
+        )
+
+        await message.reply_text(
+            "❌ بررسی اشتراک انجام نشد."
+        )
+
+
+# =========================================================
+# لغو اشتراک
+# =========================================================
+
+@Client.on_message(
+    filters.regex(r"^لغو اشتراک$")
+)
+async def cancel_subscription_handler(
+    client: Client,
+    message: Message,
+):
+    if not message.from_user:
+        return
+
+    if not _is_owner(message.from_user.id):
+        await message.reply_text(
+            "❌ فقط مالک ربات می‌تواند اشتراک را لغو کند."
+        )
+        return
+
+    if not message.reply_to_message:
+        await message.reply_text(
+            "❌ روی پیام کاربر ریپلای کنید."
+        )
+        return
+
+    target = message.reply_to_message.from_user
+
+    if not target:
+        await message.reply_text(
+            "❌ کاربر پیدا نشد."
+        )
+        return
+
+    try:
+        deactivate_subscription(target.id)
+
+        await message.reply_text(
+            f"✅ اشتراک کاربر `{target.id}` لغو شد."
+        )
+
+    except Exception:
+        logger.exception(
+            "Could not deactivate subscription"
+        )
+
+        await message.reply_text(
+            "❌ لغو اشتراک انجام نشد."
+        )
+
+
+# =========================================================
 # ترفیع موزیک
 # =========================================================
 
@@ -1109,24 +1518,41 @@ async def promote_music_admin(
     if not message.from_user:
         return
 
-    target = None
+    if not _is_owner(message.from_user.id):
+        await message.reply_text(
+            "❌ فقط مالک ربات می‌تواند مدیر موزیک تعیین کند."
+        )
+        return
 
-    if message.reply_to_message:
-        target = message.reply_to_message.from_user
-
-    if not target:
+    if not message.reply_to_message:
         await message.reply_text(
             "❌ برای ترفیع، روی پیام کاربر ریپلای کنید."
         )
         return
 
-    music_admins.add(
-        target.id
-    )
+    target = message.reply_to_message.from_user
 
-    await message.reply_text(
-        f"✅ کاربر `{target.id}` به مدیر موزیک اضافه شد."
-    )
+    if not target:
+        await message.reply_text(
+            "❌ کاربر پیدا نشد."
+        )
+        return
+
+    try:
+        add_music_admin(target.id)
+
+        await message.reply_text(
+            f"✅ کاربر `{target.id}` به مدیر موزیک اضافه شد."
+        )
+
+    except Exception:
+        logger.exception(
+            "Could not promote music admin"
+        )
+
+        await message.reply_text(
+            "❌ ترفیع مدیر موزیک انجام نشد."
+        )
 
 
 # =========================================================
@@ -1140,15 +1566,22 @@ async def demote_music_admin(
     client: Client,
     message: Message,
 ):
+    if not message.from_user:
+        return
+
+    if not _is_owner(message.from_user.id):
+        await message.reply_text(
+            "❌ فقط مالک ربات می‌تواند مدیر موزیک را عزل کند."
+        )
+        return
+
     if not message.reply_to_message:
         await message.reply_text(
             "❌ روی پیام کاربر ریپلای کنید."
         )
         return
 
-    target = (
-        message.reply_to_message.from_user
-    )
+    target = message.reply_to_message.from_user
 
     if not target:
         await message.reply_text(
@@ -1156,13 +1589,77 @@ async def demote_music_admin(
         )
         return
 
-    music_admins.discard(
-        target.id
-    )
+    try:
+        remove_music_admin(target.id)
 
-    await message.reply_text(
-        f"✅ کاربر `{target.id}` از مدیران موزیک حذف شد."
-    )
+        await message.reply_text(
+            f"✅ کاربر `{target.id}` از مدیران موزیک حذف شد."
+        )
+
+    except Exception:
+        logger.exception(
+            "Could not demote music admin"
+        )
+
+        await message.reply_text(
+            "❌ عزل مدیر موزیک انجام نشد."
+        )
+
+
+# =========================================================
+# لیست مدیران موزیک
+# =========================================================
+
+@Client.on_message(
+    filters.regex(r"^مدیران موزیک$")
+)
+async def music_admins_handler(
+    client: Client,
+    message: Message,
+):
+    if not message.from_user:
+        return
+
+    if not _is_owner(message.from_user.id):
+        await message.reply_text(
+            "❌ فقط مالک ربات می‌تواند لیست مدیران را ببیند."
+        )
+        return
+
+    try:
+        admins = get_music_admins()
+
+        if not admins:
+            await message.reply_text(
+                "👥 هیچ مدیر موزیکی ثبت نشده است."
+            )
+            return
+
+        lines = [
+            "👥 **مدیران موزیک**",
+            "",
+        ]
+
+        for index, admin_id in enumerate(
+            admins,
+            start=1,
+        ):
+            lines.append(
+                f"`{index}` — `{admin_id}`"
+            )
+
+        await message.reply_text(
+            "\n".join(lines)
+        )
+
+    except Exception:
+        logger.exception(
+            "Could not get music admins"
+        )
+
+        await message.reply_text(
+            "❌ دریافت مدیران موزیک انجام نشد."
+        )
 
 
 # =========================================================
@@ -1176,28 +1673,54 @@ async def music_owner_handler(
     client: Client,
     message: Message,
 ):
-    global music_owner_id
-
     if not message.from_user:
         return
 
-    target = None
+    current_owner = get_owner()
 
+    # اگر ریپلای شده، فقط مالک فعلی اجازه انتقال دارد.
     if message.reply_to_message:
+        if not _is_owner(message.from_user.id):
+            await message.reply_text(
+                "❌ فقط مالک فعلی می‌تواند مالک موزیک را تغییر دهد."
+            )
+            return
+
         target = message.reply_to_message.from_user
 
-    if target:
-        music_owner_id = target.id
+        if not target:
+            await message.reply_text(
+                "❌ کاربر پیدا نشد."
+            )
+            return
 
-        await message.reply_text(
-            f"👑 مالک موزیک روی `{target.id}` تنظیم شد."
-        )
+        try:
+            set_owner(target.id)
+
+            await message.reply_text(
+                f"👑 مالک موزیک به کاربر `{target.id}` منتقل شد."
+            )
+
+        except Exception:
+            logger.exception(
+                "Could not transfer owner"
+            )
+
+            await message.reply_text(
+                "❌ انتقال مالک انجام نشد."
+            )
+
         return
 
-    await message.reply_text(
-        f"👑 مالک فعلی موزیک:\n"
-        f"`{music_owner_id or 'تنظیم نشده'}`"
-    )
+    if current_owner:
+        await message.reply_text(
+            f"👑 **مالک فعلی موزیک:**\n`{current_owner}`"
+        )
+    else:
+        await message.reply_text(
+            "👑 مالک موزیک هنوز تنظیم نشده است.\n\n"
+            "OWNER_ID را در Environment Variables تنظیم کنید."
+        )
 
 
 # =========================================================
@@ -1211,6 +1734,21 @@ async def start_call_handler(
     client: Client,
     message: Message,
 ):
+    if not await _ensure_music_access(message):
+        return
+
+    if player and hasattr(player, "start_call"):
+        result = await _player_method(
+            "start_call",
+            message.chat.id,
+        )
+
+        if result:
+            await message.reply_text(
+                "📞 شروع کال انجام شد."
+            )
+            return
+
     await message.reply_text(
         "❌ شروع کال هنوز به کنترل تماس صوتی متصل نشده است."
     )
@@ -1227,6 +1765,21 @@ async def end_call_handler(
     client: Client,
     message: Message,
 ):
+    if not await _ensure_music_access(message):
+        return
+
+    if player and hasattr(player, "end_call"):
+        result = await _player_method(
+            "end_call",
+            message.chat.id,
+        )
+
+        if result:
+            await message.reply_text(
+                "📞 کال پایان یافت."
+            )
+            return
+
     if player:
         result = await _player_method(
             "stop",
@@ -1235,7 +1788,7 @@ async def end_call_handler(
 
         if result:
             await message.reply_text(
-                "⏹ پخش و اتصال فعلی متوقف شد."
+                "⏹ پخش فعلی متوقف شد."
             )
             return
 
@@ -1255,6 +1808,24 @@ async def enable_call_comments_handler(
     client: Client,
     message: Message,
 ):
+    if not await _ensure_music_access(message):
+        return
+
+    if player and hasattr(
+        player,
+        "enable_call_comments",
+    ):
+        result = await _player_method(
+            "enable_call_comments",
+            message.chat.id,
+        )
+
+        if result:
+            await message.reply_text(
+                "💬 کامنت کال فعال شد."
+            )
+            return
+
     await message.reply_text(
         "❌ کنترل کامنت کال هنوز متصل نشده است."
     )
@@ -1271,6 +1842,24 @@ async def disable_call_comments_handler(
     client: Client,
     message: Message,
 ):
+    if not await _ensure_music_access(message):
+        return
+
+    if player and hasattr(
+        player,
+        "disable_call_comments",
+    ):
+        result = await _player_method(
+            "disable_call_comments",
+            message.chat.id,
+        )
+
+        if result:
+            await message.reply_text(
+                "💬 کامنت کال غیرفعال شد."
+            )
+            return
+
     await message.reply_text(
         "❌ کنترل کامنت کال هنوز متصل نشده است."
     )
@@ -1287,6 +1876,9 @@ async def music_menu_callback(
     client: Client,
     query: CallbackQuery,
 ):
+    if not await _ensure_callback_access(query):
+        return
+
     await query.answer()
 
     await query.message.edit_text(
@@ -1307,6 +1899,9 @@ async def music_previous_callback(
     client: Client,
     query: CallbackQuery,
 ):
+    if not await _ensure_callback_access(query):
+        return
+
     await query.answer()
 
     track = await _player_method(
@@ -1315,8 +1910,9 @@ async def music_previous_callback(
     )
 
     if not track:
-        await query.message.reply_text(
-            "❌ موزیک قبلی موجود نیست."
+        await query.answer(
+            "❌ موزیک قبلی موجود نیست.",
+            show_alert=True,
         )
         return
 
@@ -1338,6 +1934,9 @@ async def music_resume_callback(
     client: Client,
     query: CallbackQuery,
 ):
+    if not await _ensure_callback_access(query):
+        return
+
     await query.answer()
 
     result = await _player_method(
@@ -1368,6 +1967,9 @@ async def music_next_callback(
     client: Client,
     query: CallbackQuery,
 ):
+    if not await _ensure_callback_access(query):
+        return
+
     await query.answer()
 
     track = await _player_method(
@@ -1400,6 +2002,9 @@ async def music_pause_callback(
     client: Client,
     query: CallbackQuery,
 ):
+    if not await _ensure_callback_access(query):
+        return
+
     await query.answer()
 
     result = await _player_method(
@@ -1430,6 +2035,9 @@ async def music_forward_10_callback(
     client: Client,
     query: CallbackQuery,
 ):
+    if not await _ensure_callback_access(query):
+        return
+
     await query.answer()
 
     result = await _player_method(
@@ -1440,11 +2048,11 @@ async def music_forward_10_callback(
 
     if result:
         await query.answer(
-            "⏩ ۱۰ ثانیه جلو رفت.",
+            "⏩ ۱۰ ثانیه جلو رفت."
         )
     else:
         await query.answer(
-            "❌ جلو بردن پشتیبانی نمی‌شود.",
+            "❌ جلو بردن انجام نشد.",
             show_alert=True,
         )
 
@@ -1460,6 +2068,9 @@ async def music_backward_10_callback(
     client: Client,
     query: CallbackQuery,
 ):
+    if not await _ensure_callback_access(query):
+        return
+
     await query.answer()
 
     result = await _player_method(
@@ -1470,11 +2081,11 @@ async def music_backward_10_callback(
 
     if result:
         await query.answer(
-            "⏪ ۱۰ ثانیه عقب رفت.",
+            "⏪ ۱۰ ثانیه عقب رفت."
         )
     else:
         await query.answer(
-            "❌ عقب بردن پشتیبانی نمی‌شود.",
+            "❌ عقب بردن انجام نشد.",
             show_alert=True,
         )
 
@@ -1490,6 +2101,9 @@ async def music_forward_30_callback(
     client: Client,
     query: CallbackQuery,
 ):
+    if not await _ensure_callback_access(query):
+        return
+
     await query.answer()
 
     result = await _player_method(
@@ -1500,11 +2114,11 @@ async def music_forward_30_callback(
 
     if result:
         await query.answer(
-            "⏩ ۳۰ ثانیه جلو رفت.",
+            "⏩ ۳۰ ثانیه جلو رفت."
         )
     else:
         await query.answer(
-            "❌ جلو بردن پشتیبانی نمی‌شود.",
+            "❌ جلو بردن انجام نشد.",
             show_alert=True,
         )
 
@@ -1520,6 +2134,9 @@ async def music_backward_30_callback(
     client: Client,
     query: CallbackQuery,
 ):
+    if not await _ensure_callback_access(query):
+        return
+
     await query.answer()
 
     result = await _player_method(
@@ -1530,11 +2147,11 @@ async def music_backward_30_callback(
 
     if result:
         await query.answer(
-            "⏪ ۳۰ ثانیه عقب رفت.",
+            "⏪ ۳۰ ثانیه عقب رفت."
         )
     else:
         await query.answer(
-            "❌ عقب بردن پشتیبانی نمی‌شود.",
+            "❌ عقب بردن انجام نشد.",
             show_alert=True,
         )
 
@@ -1550,7 +2167,8 @@ async def music_volume_callback(
     client: Client,
     query: CallbackQuery,
 ):
-    await query.answer()
+    if not await _ensure_callback_access(query):
+        return
 
     status = await _get_status(
         query.message.chat.id
@@ -1573,6 +2191,9 @@ async def music_stop_callback(
     client: Client,
     query: CallbackQuery,
 ):
+    if not await _ensure_callback_access(query):
+        return
+
     await query.answer()
 
     result = await _player_method(
@@ -1603,15 +2224,16 @@ async def music_status_callback(
     client: Client,
     query: CallbackQuery,
 ):
+    if not await _ensure_callback_access(query):
+        return
+
     await query.answer()
 
     status = await _get_status(
         query.message.chat.id
     )
 
-    track = status.get(
-        "track"
-    )
+    track = status.get("track")
 
     if not track:
         await query.message.edit_text(
@@ -1705,19 +2327,36 @@ async def show_stats_callback(
 ):
     await query.answer()
 
-    total_users = len(
-        user_stats
-    )
+    if not query.from_user:
+        return
 
-    total_plays = sum(
-        int(
-            data.get(
-                "plays",
-                0,
+    # آمار کامل برای مالک
+    if _is_owner(query.from_user.id):
+        try:
+            total_users = get_user_count()
+            total_plays = get_total_plays()
+        except Exception:
+            total_users = len(user_stats)
+            total_plays = sum(
+                int(
+                    data.get(
+                        "plays",
+                        0,
+                    )
+                )
+                for data in user_stats.values()
             )
+    else:
+        total_users = len(user_stats)
+        total_plays = sum(
+            int(
+                data.get(
+                    "plays",
+                    0,
+                )
+            )
+            for data in user_stats.values()
         )
-        for data in user_stats.values()
-    )
 
     await query.message.reply_text(
         f"📊 **آمار ربات**\n\n"
@@ -1727,7 +2366,7 @@ async def show_stats_callback(
 
 
 # =========================================================
-# Callback — عضویت
+# Callback — عضویت / اشتراک
 # =========================================================
 
 @Client.on_callback_query(
@@ -1739,15 +2378,43 @@ async def membership_callback(
 ):
     await query.answer()
 
-    if REQUIRED_CHANNEL:
+    user_id = (
+        query.from_user.id
+        if query.from_user
+        else 0
+    )
+
+    if user_id and _is_owner(user_id):
         text = (
-            "🔐 **عضویت اجباری**\n\n"
-            f"برای استفاده از ربات ابتدا در کانال زیر عضو شوید:\n"
-            f"{REQUIRED_CHANNEL}"
+            "👑 **مالک ربات**\n\n"
+            "شما محدودیت اشتراک ندارید."
         )
+
+    elif user_id:
+        try:
+            active = is_subscription_active(user_id)
+            days = subscription_days_left(user_id)
+
+            if active and days > 0:
+                text = (
+                    "🔐 **اشتراک شما فعال است.**\n\n"
+                    f"⏳ زمان باقی‌مانده: `{days}` روز"
+                )
+            else:
+                text = (
+                    "🔒 **اشتراک شما فعال نیست.**\n\n"
+                    "برای فعال‌سازی با مالک ربات تماس بگیرید."
+                )
+
+        except Exception:
+            text = (
+                "❌ بررسی اشتراک انجام نشد."
+            )
+
     else:
         text = (
-            "🔐 **عضویت اجباری هنوز تنظیم نشده است.**"
+            "🔐 **اشتراک**\n\n"
+            "برای استفاده از موزیک پلیر اشتراک فعال لازم است."
         )
 
     await query.message.reply_text(
@@ -1770,7 +2437,7 @@ async def support_callback(
 
     if SUPPORT_USERNAME:
         await query.message.reply_text(
-            f"👤 پشتیبانی:\n{SUPPORT_USERNAME}"
+            f"👤 **پشتیبانی:**\n{SUPPORT_USERNAME}"
         )
     else:
         await query.message.reply_text(
