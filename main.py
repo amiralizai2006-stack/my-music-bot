@@ -1,165 +1,350 @@
 #!/usr/bin/env python3
-"""
-Telegram Music Bot - Main Entry Point
-A self-bot for playing music in Telegram group voice calls.
-Gracefully handles environments where PyTgCalls is not available (Android/Termux).
-"""
 
 import asyncio
 import logging
-import sys
+import os
 import signal
+import sys
 from pathlib import Path
 
-# Add project root to path
+from aiohttp import web
+
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import config, validate_config
 from database import db
-from player import downloader, MusicPlayer
+from player import MusicPlayer
 from optional_deps import (
-    VOICE_CHAT_AVAILABLE, PyTgCalls, check_voice_chat_support, get_platform_info
+    VOICE_CHAT_AVAILABLE,
+    PyTgCalls,
+    check_voice_chat_support,
+    get_platform_info,
 )
 from handlers import set_bot_instances
 from pyrogram import Client
 
-# Setup logging
+
+# ============================================================
+# LOGGING
+# ============================================================
+
 logging.basicConfig(
-    level=getattr(logging, config.log_level),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=getattr(config, config.log_level),
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
         logging.FileHandler(config.log_file),
-        logging.StreamHandler(sys.stdout)
-    ]
+        logging.StreamHandler(sys.stdout),
+    ],
 )
+
 logger = logging.getLogger(__name__)
 
-# Print platform info on startup
+
+# ============================================================
+# PLATFORM
+# ============================================================
+
 platform_info = get_platform_info()
+
 logger.info("=== Platform Info ===")
 for key, value in platform_info.items():
     logger.info(f"  {key}: {value}")
 logger.info("=====================")
 
-# Validate config
+
+# ============================================================
+# CONFIG VALIDATION
+# ============================================================
+
 errors = validate_config()
+
 if errors:
     logger.error("Configuration errors:")
     for error in errors:
         logger.error(f"  - {error}")
     sys.exit(1)
 
-# Print voice chat status
+
 voice_supported, voice_msg = check_voice_chat_support()
+
 if VOICE_CHAT_AVAILABLE:
     logger.info("✅ Voice chat: AVAILABLE")
 else:
     logger.warning(f"⚠️ Voice chat: NOT AVAILABLE - {voice_msg}")
 
-# Initialize Pyrogram client
+
+# ============================================================
+# PYROGRAM
+# ============================================================
+
 app = Client(
     config.session_name,
     api_id=config.api_id,
     api_hash=config.api_hash,
-    bot_token=config.bot_token
+    bot_token=config.bot_token,
 )
 
-# Initialize PyTgCalls (only if available)
-pytgcalls = None
-if VOICE_CHAT_AVAILABLE:
-    pytgcalls = PyTgCalls(app)
 
-# Initialize MusicPlayer
+# ============================================================
+# PYTG CALLS
+# ============================================================
+
+pytgcalls = None
+
+if VOICE_CHAT_AVAILABLE and PyTgCalls is not None:
+    try:
+        pytgcalls = PyTgCalls(app)
+        logger.info("✅ PyTgCalls client created")
+    except Exception:
+        logger.exception("❌ Failed to create PyTgCalls client")
+        pytgcalls = None
+        VOICE_CHAT_AVAILABLE = False
+
+
+# ============================================================
+# MUSIC PLAYER
+# ============================================================
+
 player = MusicPlayer(pytgcalls)
 
-# Global shutdown flag
+
+# ============================================================
+# SHUTDOWN
+# ============================================================
+
 shutdown_event = asyncio.Event()
 
+health_runner = None
+
+
+# ============================================================
+# RENDER HEALTH SERVER
+# ============================================================
+
+async def health_handler(request):
+    return web.json_response(
+        {
+            "status": "ok",
+            "service": "Persian Telegram Music Bot",
+            "voice_chat": bool(VOICE_CHAT_AVAILABLE and pytgcalls),
+        }
+    )
+
+
+async def start_health_server():
+    global health_runner
+
+    port = int(os.getenv("PORT", "10000"))
+
+    health_app = web.Application()
+
+    health_app.router.add_get("/", health_handler)
+    health_app.router.add_get("/health", health_handler)
+
+    health_runner = web.AppRunner(health_app)
+
+    await health_runner.setup()
+
+    site = web.TCPSite(
+        health_runner,
+        "0.0.0.0",
+        port,
+    )
+
+    await site.start()
+
+    logger.info(f"🌐 Render health server listening on 0.0.0.0:{port}")
+
+
+async def stop_health_server():
+    global health_runner
+
+    if health_runner:
+        try:
+            await health_runner.cleanup()
+        except Exception as e:
+            logger.warning(f"Health server shutdown error: {e}")
+
+        health_runner = None
+
+
+# ============================================================
+# STARTUP
+# ============================================================
 
 async def startup():
-    """Initialize database and start clients."""
     logger.info("🚀 Starting Telegram Music Bot...")
-    
-    # Initialize database
+
+    # Database
     await db.init()
     logger.info("✅ Database initialized")
-    
-    # Start Pyrogram
+
+    # Render health server
+    await start_health_server()
+
+    # Pyrogram
     await app.start()
     logger.info("✅ Pyrogram client started")
-    
-    # Start PyTgCalls (only if available)
-    if pytgcalls:
-        await pytgcalls.start()
-        logger.info("✅ PyTgCalls started")
-    else:
-        logger.info("ℹ️ PyTgCalls skipped (not available on this platform)")
-    
-    # Set bot instances in handlers
-    set_bot_instances(app, pytgcalls, player, shutdown_event)
-    
-    # Get bot info
-    me = await app.get_me()
-    logger.info(f"🤖 Bot: @{me.username} ({me.first_name})")
-    logger.info(f"📋 Admin IDs: {config.admin_ids if config.admin_ids else 'All users'}")
-    
-    if VOICE_CHAT_AVAILABLE:
-        logger.info("🎵 Bot is ready! Send /play <song> in a group to start.")
-    else:
-        logger.info("🎵 Bot is ready (LIMITED MODE - no voice chat). Send /play <song> to download music.")
 
+    # PyTgCalls
+    if pytgcalls:
+        try:
+            await pytgcalls.start()
+            logger.info("✅ PyTgCalls started")
+        except Exception:
+            logger.exception("❌ PyTgCalls failed to start")
+            raise
+    else:
+        logger.warning("⚠️ PyTgCalls is not running")
+
+    # Register handlers
+    set_bot_instances(
+        app,
+        pytgcalls,
+        player,
+        shutdown_event,
+    )
+
+    # Bot information
+    me = await app.get_me()
+
+    logger.info(
+        f"🤖 Bot: @{me.username} ({me.first_name})"
+    )
+
+    logger.info(
+        f"📋 Admin IDs: "
+        f"{config.admin_ids if config.admin_ids else 'All users'}"
+    )
+
+    if pytgcalls:
+        logger.info(
+            "🎵 Bot is ready with Voice Chat support!"
+        )
+    else:
+        logger.warning(
+            "🎵 Bot is running without Voice Chat."
+        )
+
+
+# ============================================================
+# SHUTDOWN
+# ============================================================
 
 async def shutdown():
-    """Graceful shutdown."""
     logger.info("🛑 Shutting down...")
+
+    if shutdown_event.is_set():
+        return
+
     shutdown_event.set()
-    
-    # Leave all active calls
-    try:
-        if pytgcalls:
-            await pytgcalls.leave_all_calls()
-    except Exception as e:
-        logger.warning(f"Error leaving calls: {e}")
-    
-    # Stop clients
+
+    # Leave voice calls
     if pytgcalls:
-        await pytgcalls.stop()
-    await app.stop()
-    
+        try:
+            await pytgcalls.leave_all_calls()
+        except Exception as e:
+            logger.warning(
+                f"Error leaving calls: {e}"
+            )
+
+    # Stop PyTgCalls
+    if pytgcalls:
+        try:
+            await pytgcalls.stop()
+        except Exception as e:
+            logger.warning(
+                f"Error stopping PyTgCalls: {e}"
+            )
+
+    # Stop Pyrogram
+    try:
+        if app.is_connected:
+            await app.stop()
+    except Exception as e:
+        logger.warning(
+            f"Error stopping Pyrogram: {e}"
+        )
+
+    # Stop Render health server
+    await stop_health_server()
+
     logger.info("✅ Shutdown complete")
 
 
-def signal_handler(signum, frame):
-    """Handle shutdown signals."""
-    logger.info(f"Received signal {signum}")
-    asyncio.create_task(shutdown())
+# ============================================================
+# SIGNAL HANDLING
+# ============================================================
 
+def signal_handler(signum, frame):
+    logger.info(f"Received signal {signum}")
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(shutdown())
+    except RuntimeError:
+        pass
+
+
+# ============================================================
+# MAIN
+# ============================================================
 
 async def main():
-    # Register signal handlers
-    loop = asyncio.get_event_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
+
+    loop = asyncio.get_running_loop()
+
+    for sig in (
+        signal.SIGTERM,
+        signal.SIGINT,
+    ):
         try:
-            loop.add_signal_handler(sig, signal_handler, sig, None)
-        except NotImplementedError:
-            # Windows doesn't support add_signal_handler
+            loop.add_signal_handler(
+                sig,
+                signal_handler,
+                sig,
+                None,
+            )
+        except (NotImplementedError, RuntimeError):
             pass
-    
+
     try:
         await startup()
-        # Wait for shutdown signal
+
+        logger.info(
+            "🟢 Bot is running continuously."
+        )
+
         await shutdown_event.wait()
+
+    except asyncio.CancelledError:
+        logger.info("Main task cancelled.")
+
     except Exception as e:
-        logger.error(f"❌ Fatal error: {e}", exc_info=True)
+        logger.error(
+            f"❌ Fatal error: {e}",
+            exc_info=True,
+        )
+
     finally:
         await shutdown()
 
 
+# ============================================================
+# ENTRY POINT
+# ============================================================
+
 if __name__ == "__main__":
     try:
         asyncio.run(main())
+
     except KeyboardInterrupt:
         pass
+
     except Exception as e:
-        logger.error(f"❌ Fatal error: {e}", exc_info=True)
+        logger.error(
+            f"❌ Fatal error: {e}",
+            exc_info=True,
+        )
+
         sys.exit(1)
