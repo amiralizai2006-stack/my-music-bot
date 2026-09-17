@@ -9,13 +9,10 @@ from pathlib import Path
 
 from aiohttp import web
 
-sys.path.insert(
-    0,
-    str(Path(__file__).parent),
-)
+sys.path.insert(0, str(Path(__file__).parent))
 
 from config import config, validate_config
-from database import db
+from database import init_db
 from player import MusicPlayer
 from optional_deps import (
     VOICE_CHAT_AVAILABLE,
@@ -34,11 +31,7 @@ from assistant import create_assistant
 # ============================================================
 
 logging.basicConfig(
-    level=getattr(
-        logging,
-        config.log_level,
-        logging.INFO,
-    ),
+    level=getattr(logging, config.log_level, logging.INFO),
     format=(
         "%(asctime)s - "
         "%(name)s - "
@@ -46,12 +39,8 @@ logging.basicConfig(
         "%(message)s"
     ),
     handlers=[
-        logging.FileHandler(
-            config.log_file
-        ),
-        logging.StreamHandler(
-            sys.stdout
-        ),
+        logging.FileHandler(config.log_file),
+        logging.StreamHandler(sys.stdout),
     ],
 )
 
@@ -62,13 +51,7 @@ logger = logging.getLogger(__name__)
 # RENDER
 # ============================================================
 
-PORT = int(
-    os.getenv(
-        "PORT",
-        "10000",
-    )
-)
-
+PORT = int(os.getenv("PORT", "10000"))
 health_runner = None
 
 
@@ -91,19 +74,10 @@ async def start_health_server():
 
     server = web.Application()
 
-    server.router.add_get(
-        "/",
-        health,
-    )
+    server.router.add_get("/", health)
+    server.router.add_get("/health", health)
 
-    server.router.add_get(
-        "/health",
-        health,
-    )
-
-    runner = web.AppRunner(
-        server
-    )
+    runner = web.AppRunner(server)
 
     await runner.setup()
 
@@ -129,20 +103,12 @@ async def start_health_server():
 
 platform_info = get_platform_info()
 
-logger.info(
-    "=== Platform Info ==="
-)
+logger.info("=== Platform Info ===")
 
 for key, value in platform_info.items():
-    logger.info(
-        "%s: %s",
-        key,
-        value,
-    )
+    logger.info("%s: %s", key, value)
 
-logger.info(
-    "====================="
-)
+logger.info("=====================")
 
 
 # ============================================================
@@ -153,16 +119,10 @@ errors = validate_config()
 
 if errors:
 
-    logger.error(
-        "Configuration errors:"
-    )
+    logger.error("Configuration errors:")
 
     for error in errors:
-
-        logger.error(
-            " - %s",
-            error,
-        )
+        logger.error(" - %s", error)
 
     sys.exit(1)
 
@@ -171,15 +131,11 @@ if errors:
 # VOICE CHAT SUPPORT
 # ============================================================
 
-voice_supported, voice_msg = (
-    check_voice_chat_support()
-)
+voice_supported, voice_msg = check_voice_chat_support()
 
 if VOICE_CHAT_AVAILABLE:
 
-    logger.info(
-        "✅ Voice chat support available"
-    )
+    logger.info("✅ Voice chat support available")
 
 else:
 
@@ -212,9 +168,7 @@ def create_runtime():
     global player
     global shutdown_event
 
-    logger.info(
-        "🔧 Creating runtime..."
-    )
+    logger.info("🔧 Creating runtime...")
 
     # ========================================================
     # BOT CLIENT
@@ -227,9 +181,7 @@ def create_runtime():
         bot_token=config.bot_token,
     )
 
-    logger.info(
-        "✅ Bot client created"
-    )
+    logger.info("✅ Bot client created")
 
     # ========================================================
     # ASSISTANT USER CLIENT
@@ -262,10 +214,6 @@ def create_runtime():
 
     # ========================================================
     # PYTGCALLS
-    #
-    # IMPORTANT:
-    # PyTgCalls MUST use the assistant USER account.
-    # It must NOT use the Bot client.
     # ========================================================
 
     if assistant:
@@ -330,7 +278,7 @@ async def startup():
     )
 
     # ========================================================
-    # CREATE EVERYTHING IN CURRENT EVENT LOOP
+    # CREATE RUNTIME
     # ========================================================
 
     create_runtime()
@@ -341,7 +289,9 @@ async def startup():
 
     try:
 
-        await db.init()
+        # database.py uses normal synchronous SQLite
+        # initialization, so DO NOT use await db.init()
+        init_db()
 
         logger.info(
             "✅ Database initialized"
@@ -407,10 +357,6 @@ async def startup():
                 "✅ Telegram ASSISTANT started"
             )
 
-            # ------------------------------------------------
-            # Assistant account information
-            # ------------------------------------------------
-
             assistant_me = (
                 await assistant.get_me()
             )
@@ -463,9 +409,6 @@ async def startup():
 
     # ========================================================
     # HANDLERS
-    #
-    # handlers still receive BOT as the message client.
-    # PyTgCalls/player use ASSISTANT.
     # ========================================================
 
     try:
@@ -759,9 +702,7 @@ if __name__ == "__main__":
 
     try:
 
-        asyncio.run(
-            main()
-        )
+        asyncio.run(main())
 
     except KeyboardInterrupt:
 
