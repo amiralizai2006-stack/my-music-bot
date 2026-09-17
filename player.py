@@ -1,1319 +1,1476 @@
-"""
-SILENT Telegram Music Player
-Downloader + Voice Chat Player
-
-این فایل با main.py فعلی پروژه سازگار است.
-هیچ Secret یا API credential داخل این فایل قرار نده.
-"""
-
-import asyncio
 import inspect
 import logging
 import os
 import re
 import time
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional
 
-import yt_dlp
+from pyrogram import filters
+from pyrogram.handlers import MessageHandler, CallbackQueryHandler
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-from config import config
-
-try:
-    from optional_deps import (
-        VOICE_CHAT_AVAILABLE,
-        MediaStream,
-    )
-except Exception:
-    VOICE_CHAT_AVAILABLE = False
-    MediaStream = None
-
+from player import TrackInfo
 
 logger = logging.getLogger(__name__)
 
+# ============================================================
+# Runtime
+# ============================================================
 
-# =========================================================
-# Track
-# =========================================================
+bot = None
+pytgcalls = None
+player = None
+shutdown_event = None
 
-@dataclass
-class TrackInfo:
-    title: str
-    duration: int = 0
-    url: str = ""
-    webpage_url: str = ""
-    thumbnail: str = ""
-    uploader: str = "Unknown"
-    filepath: Optional[str] = None
-    performer: str = ""
+_handlers_registered = False
 
-    @property
-    def artist(self) -> str:
-        return self.performer or self.uploader or "Unknown"
+_music_admins = set()
+_music_owner_id = 0
 
-
-# =========================================================
-# Helpers
-# =========================================================
-
-async def _maybe_await(value):
-    if inspect.isawaitable(value):
-        return await value
-    return value
+_stats = {
+    "plays": 0,
+    "errors": 0,
+    "started_at": time.time(),
+}
 
 
-def _clean_filename(name: str) -> str:
-    name = name or "audio"
-    name = re.sub(r'[\\/:*?"<>|]+', "_", name)
-    name = re.sub(r"\s+", " ", name).strip()
-    return name[:150] or "audio"
+# ============================================================
+# Config / permissions
+# ============================================================
 
+def get_owner_id() -> int:
+    global _music_owner_id
 
-def _duration(value) -> int:
+    if _music_owner_id:
+        return _music_owner_id
+
     try:
-        return max(0, int(value or 0))
+        from config import config
+        value = getattr(config, "owner_id", 0)
     except Exception:
-        return 0
+        value = os.getenv("OWNER_ID", "0")
+
+    try:
+        _music_owner_id = int(value or 0)
+    except (TypeError, ValueError):
+        _music_owner_id = 0
+
+    return _music_owner_id
 
 
-# =========================================================
-# Downloader
-# =========================================================
+def is_owner(user_id: int) -> bool:
+    owner_id = get_owner_id()
+    return bool(owner_id and user_id == owner_id)
 
-class MusicDownloader:
-    def __init__(self):
-        downloads_dir = getattr(
-            config,
-            "downloads_dir",
-            "./downloads",
+
+def is_music_admin(user_id: int) -> bool:
+    return is_owner(user_id) or user_id in _music_admins
+
+
+# ============================================================
+# Telegram helpers
+# ============================================================
+
+async def reply(message, text: str, **kwargs):
+    try:
+        return await message.reply_text(
+            text,
+            quote=True,
+            **kwargs,
         )
-
-        self.downloads_dir = Path(downloads_dir)
-        self.downloads_dir.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-
-        self.base_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "noplaylist": True,
-            "ignoreerrors": False,
-            "retries": 5,
-            "fragment_retries": 5,
-            "socket_timeout": 30,
-            "nocheckcertificate": True,
-            "geo_bypass": True,
-            "http_headers": {
-                "User-Agent": (
-                    "Mozilla/5.0 "
-                    "(Linux; Android 12) "
-                    "AppleWebKit/537.36 "
-                    "Chrome/131.0 Mobile Safari/537.36"
-                )
-            },
-        }
-
-    # -----------------------------------------------------
-    # Extract information
-    # -----------------------------------------------------
-
-    async def extract_info(
-        self,
-        query: str,
-    ) -> Optional[TrackInfo]:
-
-        if not query:
-            return None
-
-        query = query.strip()
-
-        loop = asyncio.get_running_loop()
-
-        def _extract():
-            opts = {
-                **self.base_opts,
-                "extract_flat": False,
-            }
-
-            with yt_dlp.YoutubeDL(opts) as ydl:
-
-                if query.startswith(
-                    (
-                        "http://",
-                        "https://",
-                    )
-                ):
-                    return ydl.extract_info(
-                        query,
-                        download=False,
-                    )
-
-                return ydl.extract_info(
-                    f"ytsearch1:{query}",
-                    download=False,
-                )
-
-        try:
-            info = await loop.run_in_executor(
-                None,
-                _extract,
-            )
-
-            if not info:
-                return None
-
-            if info.get("entries"):
-                entries = [
-                    x
-                    for x in info.get("entries", [])
-                    if x
-                ]
-
-                if not entries:
-                    return None
-
-                info = entries[0]
-
-            if not info:
-                return None
-
-            webpage_url = (
-                info.get("webpage_url")
-                or info.get("original_url")
-                or ""
-            )
-
-            return TrackInfo(
-                title=(
-                    info.get("title")
-                    or "Unknown"
-                ),
-                duration=_duration(
-                    info.get("duration")
-                ),
-                url=(
-                    info.get("url")
-                    or ""
-                ),
-                webpage_url=webpage_url,
-                thumbnail=(
-                    info.get("thumbnail")
-                    or ""
-                ),
-                uploader=(
-                    info.get("uploader")
-                    or info.get("channel")
-                    or "Unknown"
-                ),
-                performer=(
-                    info.get("artist")
-                    or info.get("creator")
-                    or ""
-                ),
-            )
-
-        except Exception:
-            logger.exception(
-                "❌ Extract information failed: %s",
-                query,
-            )
-            return None
-
-    # -----------------------------------------------------
-    # Search
-    # -----------------------------------------------------
-
-    async def search(
-        self,
-        query: str,
-        limit: int = 5,
-    ) -> List[TrackInfo]:
-
-        if not query:
-            return []
-
-        limit = max(
-            1,
-            min(10, int(limit)),
-        )
-
-        loop = asyncio.get_running_loop()
-
-        def _search():
-            opts = {
-                **self.base_opts,
-                "extract_flat": True,
-            }
-
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                return ydl.extract_info(
-                    f"ytsearch{limit}:{query}",
-                    download=False,
-                )
-
-        try:
-            info = await loop.run_in_executor(
-                None,
-                _search,
-            )
-
-            if not info:
-                return []
-
-            results = []
-
-            for entry in info.get(
-                "entries",
-                [],
-            ):
-
-                if not entry:
-                    continue
-
-                results.append(
-                    TrackInfo(
-                        title=(
-                            entry.get("title")
-                            or "Unknown"
-                        ),
-                        duration=_duration(
-                            entry.get("duration")
-                        ),
-                        url=(
-                            entry.get("url")
-                            or ""
-                        ),
-                        webpage_url=(
-                            entry.get("webpage_url")
-                            or entry.get("url")
-                            or ""
-                        ),
-                        thumbnail=(
-                            entry.get("thumbnail")
-                            or ""
-                        ),
-                        uploader=(
-                            entry.get("uploader")
-                            or entry.get("channel")
-                            or "Unknown"
-                        ),
-                        performer=(
-                            entry.get("artist")
-                            or ""
-                        ),
-                    )
-                )
-
-            return results
-
-        except Exception:
-            logger.exception(
-                "❌ Music search failed: %s",
-                query,
-            )
-            return []
-
-    # -----------------------------------------------------
-    # Download
-    # -----------------------------------------------------
-
-    async def download(
-        self,
-        track: TrackInfo,
-    ) -> Optional[str]:
-
-        if not track:
-            return None
-
-        # اگر قبلاً دانلود شده
-        if track.filepath:
-            path = Path(track.filepath)
-
-            if path.exists() and path.stat().st_size > 0:
-                return str(path)
-
-        source = (
-            track.webpage_url
-            or track.url
-        )
-
-        if not source:
-            logger.error(
-                "❌ Track has no source URL: %s",
-                track.title,
-            )
-            return None
-
-        loop = asyncio.get_running_loop()
-
-        safe_title = _clean_filename(
-            track.title
-        )
-
-        output_template = str(
-            self.downloads_dir
-            / f"{safe_title}.%(ext)s"
-        )
-
-        def _download():
-
-            # اول تلاش: MP3 با FFmpeg
-            mp3_opts = {
-                **self.base_opts,
-                "format": (
-                    "bestaudio[ext=m4a]/"
-                    "bestaudio[ext=webm]/"
-                    "bestaudio/best"
-                ),
-                "outtmpl": output_template,
-                "postprocessors": [
-                    {
-                        "key": "FFmpegExtractAudio",
-                        "preferredcodec": "mp3",
-                        "preferredquality": "192",
-                    }
-                ],
-            }
-
-            try:
-
-                with yt_dlp.YoutubeDL(
-                    mp3_opts
-                ) as ydl:
-
-                    info = ydl.extract_info(
-                        source,
-                        download=True,
-                    )
-
-                    if not info:
-                        return None
-
-            except Exception:
-
-                logger.exception(
-                    "⚠️ MP3 download failed, trying original audio"
-                )
-
-                # تلاش دوم بدون postprocessor
-                fallback_template = str(
-                    self.downloads_dir
-                    / f"{safe_title}.%(ext)s"
-                )
-
-                fallback_opts = {
-                    **self.base_opts,
-                    "format": (
-                        "bestaudio[ext=m4a]/"
-                        "bestaudio[ext=webm]/"
-                        "bestaudio/best"
-                    ),
-                    "outtmpl": fallback_template,
-                }
-
-                with yt_dlp.YoutubeDL(
-                    fallback_opts
-                ) as ydl:
-
-                    info = ydl.extract_info(
-                        source,
-                        download=True,
-                    )
-
-                    if not info:
-                        return None
-
-            # پیدا کردن فایل واقعی
-            candidates = []
-
-            for path in self.downloads_dir.iterdir():
-
-                if not path.is_file():
-                    continue
-
-                if path.stat().st_size <= 0:
-                    continue
-
-                if path.suffix.lower() not in {
-                    ".mp3",
-                    ".m4a",
-                    ".webm",
-                    ".opus",
-                    ".ogg",
-                    ".wav",
-                    ".aac",
-                    ".flac",
-                }:
-                    continue
-
-                candidates.append(path)
-
-            if not candidates:
-                return None
-
-            # جدیدترین فایل
-            candidates.sort(
-                key=lambda p: p.stat().st_mtime,
-                reverse=True,
-            )
-
-            return str(candidates[0])
-
-        try:
-
-            filepath = await loop.run_in_executor(
-                None,
-                _download,
-            )
-
-            if not filepath:
-                logger.error(
-                    "❌ No downloaded audio file found"
-                )
-                return None
-
-            path = Path(filepath)
-
-            if not path.exists():
-                logger.error(
-                    "❌ Downloaded file does not exist: %s",
-                    filepath,
-                )
-                return None
-
-            if path.stat().st_size <= 0:
-                logger.error(
-                    "❌ Downloaded file is empty: %s",
-                    filepath,
-                )
-                return None
-
-            track.filepath = str(path)
-
-            logger.info(
-                "✅ Download completed: %s",
-                filepath,
-            )
-
-            return str(path)
-
-        except Exception:
-
-            logger.exception(
-                "❌ Download failed: %s",
-                track.title,
-            )
-
-            return None
-
-    # -----------------------------------------------------
-    # Download Telegram audio
-    # -----------------------------------------------------
-
-    async def prepare_local_file(
-        self,
-        filepath: str,
-        title: str = "Telegram Audio",
-        uploader: str = "Telegram",
-    ) -> Optional[TrackInfo]:
-
-        if not filepath:
-            return None
-
-        path = Path(filepath)
-
-        if not path.exists():
-            return None
-
-        if path.stat().st_size <= 0:
-            return None
-
-        return TrackInfo(
-            title=title or "Telegram Audio",
-            duration=0,
-            url="",
-            webpage_url="",
-            thumbnail="",
-            uploader=uploader or "Telegram",
-            filepath=str(path),
-        )
-
-
-# =========================================================
-# Music Player
-# =========================================================
-
-class MusicPlayer:
-
-    def __init__(
-        self,
-        pytgcalls_client=None,
+    except Exception:
+        logger.exception("Failed to send Telegram message")
+        return None
+
+
+def chat_id(message) -> Optional[int]:
+    return getattr(
+        getattr(message, "chat", None),
+        "id",
+        None,
+    )
+
+
+# ============================================================
+# Media detection
+# ============================================================
+
+def get_replied_media(message):
+    """
+    Detect:
+    Audio
+    Voice
+    Document
+    Video
+
+    The COMPLETE Message object is returned.
+    """
+
+    replied = getattr(message, "reply_to_message", None)
+
+    if not replied:
+        return None
+
+    for media_type in (
+        "audio",
+        "voice",
+        "document",
+        "video",
     ):
+        if getattr(replied, media_type, None):
+            return replied
 
-        self.client = pytgcalls_client
+    return None
 
-        self.current_track: Optional[
-            TrackInfo
-        ] = None
 
-        self.current_chat_id = None
+def get_media_title(message) -> str:
+    audio = getattr(message, "audio", None)
 
-        self.volume = int(
-            getattr(
-                config,
-                "default_volume",
-                100,
-            )
-        )
+    if audio:
+        title = getattr(audio, "title", None)
+        performer = getattr(audio, "performer", None)
 
-        self.volume = max(
-            0,
-            min(200, self.volume),
-        )
+        if title and performer:
+            return f"{performer} - {title}"
 
-        self.is_playing = False
-        self.is_paused = False
+        if title:
+            return title
 
-        self.started_at = None
-        self.paused_at = None
-        self.position = 0
+        if performer:
+            return performer
 
-        self.queue: List[
-            TrackInfo
-        ] = []
+    document = getattr(message, "document", None)
 
-        self.history: List[
-            TrackInfo
-        ] = []
-
-        self._lock = asyncio.Lock()
-
-        self._available = bool(
-            VOICE_CHAT_AVAILABLE
-            and self.client is not None
-            and MediaStream is not None
-        )
-
-        self.downloader = MusicDownloader()
-
-        logger.info(
-            "MusicPlayer initialized | voice=%s",
-            self._available,
-        )
-
-    # -----------------------------------------------------
-    # Availability
-    # -----------------------------------------------------
-
-    def is_voice_chat_available(
-        self,
-    ) -> bool:
-
-        return self._available
-
-    # -----------------------------------------------------
-    # Internal client call
-    # -----------------------------------------------------
-
-    async def _call(
-        self,
-        method_name: str,
-        *args,
-        **kwargs,
-    ):
-
-        if not self.client:
-            return None
-
-        method = getattr(
-            self.client,
-            method_name,
+    if document:
+        filename = getattr(
+            document,
+            "file_name",
             None,
         )
 
-        if not callable(method):
+        if filename:
+            return filename
+
+    video = getattr(message, "video", None)
+
+    if video:
+        filename = getattr(
+            video,
+            "file_name",
+            None,
+        )
+
+        if filename:
+            return filename
+
+    return "موزیک"
+
+
+def get_media_duration(message) -> int:
+    for media_type in (
+        "audio",
+        "voice",
+        "video",
+    ):
+        media = getattr(
+            message,
+            media_type,
+            None,
+        )
+
+        if media:
+            try:
+                return int(
+                    getattr(
+                        media,
+                        "duration",
+                        0,
+                    ) or 0
+                )
+            except Exception:
+                return 0
+
+    return 0
+
+
+def get_extension(message) -> str:
+    audio = getattr(message, "audio", None)
+
+    if audio:
+        filename = getattr(
+            audio,
+            "file_name",
+            "",
+        ) or ""
+
+        extension = Path(filename).suffix.lower()
+
+        return extension or ".mp3"
+
+    voice = getattr(message, "voice", None)
+
+    if voice:
+        return ".ogg"
+
+    document = getattr(
+        message,
+        "document",
+        None,
+    )
+
+    if document:
+        filename = getattr(
+            document,
+            "file_name",
+            "",
+        ) or ""
+
+        extension = Path(filename).suffix.lower()
+
+        return extension or ".mp3"
+
+    video = getattr(
+        message,
+        "video",
+        None,
+    )
+
+    if video:
+        return ".mp4"
+
+    return ".mp3"
+
+
+def safe_filename(name: str) -> str:
+    name = name or "music"
+
+    name = re.sub(
+        r'[\\/:*?"<>|]+',
+        "_",
+        name,
+    )
+
+    name = re.sub(
+        r"\s+",
+        " ",
+        name,
+    ).strip()
+
+    return name[:120] or "music"
+
+
+# ============================================================
+# Download Telegram media
+# ============================================================
+
+def downloads_directory() -> Path:
+    directory = Path("downloads")
+
+    try:
+        from config import config
+
+        configured = getattr(
+            config,
+            "downloads_dir",
+            None,
+        )
+
+        if configured:
+            directory = Path(configured)
+
+    except Exception:
+        pass
+
+    directory.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    return directory
+
+
+async def download_telegram_media(message) -> Optional[str]:
+    """
+    IMPORTANT:
+    Pyrogram receives the complete Message object here.
+
+    This fixes the common:
+    «در حال آماده‌سازی فایل»
+    →
+    «پخش آهنگ انجام نشد»
+    problem caused by passing the wrong media object.
+    """
+
+    if bot is None:
+        logger.error("Bot instance is not ready")
+        return None
+
+    title = safe_filename(
+        get_media_title(message)
+    )
+
+    extension = get_extension(message)
+
+    message_id = getattr(
+        message,
+        "id",
+        int(time.time()),
+    )
+
+    target = (
+        downloads_directory()
+        / f"{title}_{message_id}{extension}"
+    )
+
+    try:
+        downloaded = await bot.download_media(
+            message,
+            file_name=str(target),
+        )
+
+        if not downloaded:
+            logger.error(
+                "Pyrogram download_media returned empty result"
+            )
             return None
 
-        return await _maybe_await(
-            method(
-                *args,
-                **kwargs,
-            )
-        )
-
-    # -----------------------------------------------------
-    # Play
-    # -----------------------------------------------------
-
-    async def play(
-        self,
-        chat_id: int,
-        track: TrackInfo,
-    ) -> bool:
-
-        if not self._available:
-            logger.error(
-                "❌ Voice chat is not available"
-            )
-            return False
-
-        if not track:
-            logger.error(
-                "❌ No track supplied"
-            )
-            return False
-
-        if not track.filepath:
-            logger.error(
-                "❌ Track has no filepath: %s",
-                track.title,
-            )
-            return False
-
-        path = Path(
-            track.filepath
-        )
+        path = Path(downloaded)
 
         if not path.exists():
             logger.error(
-                "❌ Audio file does not exist: %s",
+                "Downloaded file does not exist: %s",
                 path,
             )
-            return False
+            return None
 
         if path.stat().st_size <= 0:
             logger.error(
-                "❌ Audio file is empty: %s",
+                "Downloaded file is empty: %s",
                 path,
             )
-            return False
+            return None
 
-        async with self._lock:
-
-            try:
-
-                # اگر در یک چت دیگر در حال پخش است
-                if (
-                    self.current_chat_id
-                    and self.current_chat_id != chat_id
-                ):
-                    try:
-                        await self._call(
-                            "leave_call",
-                            self.current_chat_id,
-                        )
-                    except Exception:
-                        logger.exception(
-                            "Could not leave previous call"
-                        )
-
-                # ساخت MediaStream
-                stream = MediaStream(
-                    str(path),
-                    video_flags=MediaStream.Flags.IGNORE,
-                )
-
-                logger.info(
-                    "▶️ Starting PyTgCalls playback | chat=%s | file=%s",
-                    chat_id,
-                    path,
-                )
-
-                # API اصلی PyTgCalls
-                await self._call(
-                    "play",
-                    chat_id,
-                    stream,
-                )
-
-                self.current_track = track
-                self.current_chat_id = chat_id
-
-                self.is_playing = True
-                self.is_paused = False
-
-                self.started_at = time.monotonic()
-                self.paused_at = None
-                self.position = 0
-
-                logger.info(
-                    "🟢 NOW PLAYING: %s",
-                    track.title,
-                )
-
-                return True
-
-            except Exception:
-
-                logger.exception(
-                    "❌ PyTgCalls playback failed | chat=%s | track=%s",
-                    chat_id,
-                    track.title,
-                )
-
-                return False
-
-    # -----------------------------------------------------
-    # Play downloaded track
-    # -----------------------------------------------------
-
-    async def play_track(
-        self,
-        chat_id: int,
-        track: TrackInfo,
-    ) -> bool:
-
-        if not track.filepath:
-
-            filepath = await self.downloader.download(
-                track
-            )
-
-            if not filepath:
-                return False
-
-            track.filepath = filepath
-
-        return await self.play(
-            chat_id,
-            track,
+        logger.info(
+            "Telegram media downloaded: %s (%d bytes)",
+            path,
+            path.stat().st_size,
         )
 
-    # -----------------------------------------------------
-    # Queue
-    # -----------------------------------------------------
+        return str(path)
 
-    def add_to_queue(
-        self,
-        track: TrackInfo,
-    ):
-
-        if track:
-            self.queue.append(track)
-
-    def clear_queue(self):
-
-        self.queue.clear()
-
-    def get_queue(self):
-
-        return list(self.queue)
-
-    # -----------------------------------------------------
-    # Next
-    # -----------------------------------------------------
-
-    async def next(
-        self,
-        chat_id: int,
-    ) -> bool:
-
-        if not self.queue:
-            logger.info(
-                "Queue is empty"
-            )
-            return False
-
-        track = self.queue.pop(0)
-
-        if self.current_track:
-            self.history.append(
-                self.current_track
-            )
-
-            if len(self.history) > 20:
-                self.history.pop(0)
-
-        return await self.play_track(
-            chat_id,
-            track,
+    except Exception:
+        logger.exception(
+            "Telegram media download failed"
         )
 
-    # -----------------------------------------------------
-    # Previous
-    # -----------------------------------------------------
+        return None
 
-    async def previous(
-        self,
-        chat_id: int,
-    ) -> bool:
 
-        if not self.history:
-            return False
+# ============================================================
+# TrackInfo
+# ============================================================
 
-        track = self.history.pop()
+def create_track(filepath: str, message):
+    audio = getattr(
+        message,
+        "audio",
+        None,
+    )
 
-        return await self.play_track(
-            chat_id,
-            track,
+    title = None
+    performer = None
+
+    if audio:
+        title = getattr(
+            audio,
+            "title",
+            None,
         )
 
-    # -----------------------------------------------------
-    # Stop
-    # -----------------------------------------------------
-
-    async def stop(
-        self,
-        chat_id: int,
-    ) -> bool:
-
-        if not self._available:
-            return False
-
-        async with self._lock:
-
-            try:
-
-                await self._call(
-                    "leave_call",
-                    chat_id,
-                )
-
-                if self.current_track:
-                    try:
-                        if self.current_track.filepath:
-                            path = Path(
-                                self.current_track.filepath
-                            )
-
-                            # فایل‌های کوچک قدیمی را پاک کن
-                            # اما فایل‌های در حال استفاده را
-                            # قبل از خروج پاک نمی‌کنیم.
-                    except Exception:
-                        pass
-
-                self.current_track = None
-                self.current_chat_id = None
-
-                self.is_playing = False
-                self.is_paused = False
-
-                self.started_at = None
-                self.paused_at = None
-                self.position = 0
-
-                logger.info(
-                    "⏹️ Playback stopped: %s",
-                    chat_id,
-                )
-
-                return True
-
-            except Exception:
-
-                logger.exception(
-                    "❌ Stop failed"
-                )
-
-                return False
-
-    # -----------------------------------------------------
-    # Pause
-    # -----------------------------------------------------
-
-    async def pause(
-        self,
-        chat_id: int,
-    ) -> bool:
-
-        if not self._available:
-            return False
-
-        try:
-
-            result = await self._call(
-                "pause",
-                chat_id,
-            )
-
-            if result is None:
-                logger.error(
-                    "❌ PyTgCalls pause method unavailable"
-                )
-                return False
-
-            self.is_paused = True
-            self.is_playing = False
-
-            if self.started_at:
-                self.position = (
-                    time.monotonic()
-                    - self.started_at
-                )
-
-            self.paused_at = time.monotonic()
-
-            return True
-
-        except Exception:
-
-            logger.exception(
-                "❌ Pause failed"
-            )
-
-            return False
-
-    # -----------------------------------------------------
-    # Resume
-    # -----------------------------------------------------
-
-    async def resume(
-        self,
-        chat_id: int,
-    ) -> bool:
-
-        if not self._available:
-            return False
-
-        try:
-
-            result = await self._call(
-                "resume",
-                chat_id,
-            )
-
-            if result is None:
-                logger.error(
-                    "❌ PyTgCalls resume method unavailable"
-                )
-                return False
-
-            self.is_paused = False
-            self.is_playing = True
-
-            if self.paused_at:
-                paused_time = (
-                    time.monotonic()
-                    - self.paused_at
-                )
-
-                if self.started_at:
-                    self.started_at += paused_time
-
-            self.paused_at = None
-
-            return True
-
-        except Exception:
-
-            logger.exception(
-                "❌ Resume failed"
-            )
-
-            return False
-
-    # -----------------------------------------------------
-    # Volume
-    # -----------------------------------------------------
-
-    async def set_volume(
-        self,
-        chat_id: int,
-        volume: int,
-    ) -> bool:
-
-        if not self._available:
-            return False
-
-        try:
-
-            volume = int(volume)
-
-        except Exception:
-            return False
-
-        volume = max(
-            0,
-            min(200, volume),
+        performer = getattr(
+            audio,
+            "performer",
+            None,
         )
 
-        try:
+    title = title or get_media_title(message)
 
-            method = getattr(
-                self.client,
-                "change_volume_call",
-                None,
-            )
+    return TrackInfo(
+        title=title or "موزیک",
+        duration=get_media_duration(message),
+        url="",
+        webpage_url="",
+        thumbnail="",
+        uploader=performer or "Telegram",
+        filepath=str(filepath),
+    )
 
-            if not callable(method):
-                method = getattr(
-                    self.client,
-                    "change_volume",
-                    None,
-                )
 
-            if not callable(method):
-                logger.error(
-                    "❌ PyTgCalls volume method unavailable"
-                )
-                return False
+# ============================================================
+# Player bridge
+# ============================================================
 
-            await _maybe_await(
-                method(
-                    chat_id,
-                    volume,
-                )
-            )
+async def player_call(
+    method_name: str,
+    chat: int,
+    *args,
+):
+    if player is None:
+        logger.error(
+            "Player is not initialized"
+        )
+        return False
 
-            self.volume = volume
+    method = getattr(
+        player,
+        method_name,
+        None,
+    )
 
-            return True
+    if not callable(method):
+        logger.error(
+            "Player method missing: %s",
+            method_name,
+        )
+        return False
 
-        except Exception:
-
-            logger.exception(
-                "❌ Volume change failed"
-            )
-
-            return False
-
-    # -----------------------------------------------------
-    # Seek
-    # -----------------------------------------------------
-
-    async def seek(
-        self,
-        chat_id: int,
-        seconds: int,
-    ) -> bool:
-
-        if not self._available:
-            return False
-
-        try:
-            seconds = int(seconds)
-        except Exception:
-            return False
-
-        if not self.current_track:
-            return False
-
-        seconds = max(
-            0,
-            seconds,
+    try:
+        result = method(
+            chat,
+            *args,
         )
 
-        # PyTgCalls versions مختلف هستند.
-        # اگر seek در نسخه نصب‌شده وجود داشته باشد استفاده می‌شود.
-        for method_name in (
-            "seek",
-            "seek_stream",
-            "change_stream",
-        ):
+        if inspect.isawaitable(result):
+            result = await result
 
-            method = getattr(
-                self.client,
-                method_name,
-                None,
-            )
+        # IMPORTANT:
+        # None is NOT failure.
+        #
+        # Some PyTgCalls methods return None
+        # after successful execution.
+        #
+        # Only explicit False is failure.
 
-            if not callable(method):
-                continue
+        return result
 
-            try:
-
-                result = await _maybe_await(
-                    method(
-                        chat_id,
-                        seconds,
-                    )
-                )
-
-                self.position = seconds
-
-                if self.started_at:
-                    self.started_at = (
-                        time.monotonic()
-                        - seconds
-                    )
-
-                return True
-
-            except Exception:
-                logger.exception(
-                    "Seek method failed: %s",
-                    method_name,
-                )
-
-        logger.warning(
-            "⚠️ Seek is not supported by installed PyTgCalls version"
+    except Exception:
+        logger.exception(
+            "Player operation failed: %s",
+            method_name,
         )
 
         return False
 
-    # -----------------------------------------------------
-    # Forward
-    # -----------------------------------------------------
 
-    async def forward(
-        self,
-        chat_id: int,
-        seconds: int = 10,
-    ) -> bool:
+# ============================================================
+# PLAY
+# ============================================================
 
-        try:
-            seconds = max(
-                1,
-                min(100, int(seconds)),
-            )
-        except Exception:
-            seconds = 10
+async def play_replied_audio(
+    client,
+    message,
+):
+    """
+    Full flow:
 
-        current = self.get_position()
+    Telegram reply
+          ↓
+    detect media
+          ↓
+    download
+          ↓
+    TrackInfo
+          ↓
+    player.play_track()
+          ↓
+    voice chat
+    """
 
-        return await self.seek(
-            chat_id,
-            current + seconds,
+    if player is None:
+        await reply(
+            message,
+            "❌ پلیر هنوز آماده نشده است.",
+        )
+        return
+
+    current_chat = chat_id(message)
+
+    if not current_chat:
+        return
+
+    media_message = get_replied_media(
+        message
+    )
+
+    if not media_message:
+        await reply(
+            message,
+            "🎵 روی آهنگ ریپلای کن و فقط «پخش» را بفرست.",
+        )
+        return
+
+    progress = await reply(
+        message,
+        "⏳ در حال آماده‌سازی فایل...",
+    )
+
+    filepath = await download_telegram_media(
+        media_message
+    )
+
+    if not filepath:
+
+        _stats["errors"] += 1
+
+        if progress:
+            try:
+                await progress.edit_text(
+                    "❌ دریافت فایل انجام نشد.\n\n"
+                    "روی یک فایل صوتی معتبر ریپلای کن "
+                    "و دوباره «پخش» بزن."
+                )
+            except Exception:
+                pass
+
+        return
+
+    try:
+        track = create_track(
+            filepath,
+            media_message,
         )
 
-    # -----------------------------------------------------
-    # Backward
-    # -----------------------------------------------------
+    except Exception:
 
-    async def backward(
-        self,
-        chat_id: int,
-        seconds: int = 10,
-    ) -> bool:
+        _stats["errors"] += 1
 
-        try:
-            seconds = max(
-                1,
-                min(100, int(seconds)),
-            )
-        except Exception:
-            seconds = 10
-
-        current = self.get_position()
-
-        return await self.seek(
-            chat_id,
-            max(0, current - seconds),
+        logger.exception(
+            "TrackInfo creation failed"
         )
 
-    # -----------------------------------------------------
-    # Position
-    # -----------------------------------------------------
+        if progress:
+            try:
+                await progress.edit_text(
+                    "❌ اطلاعات آهنگ ساخته نشد."
+                )
+            except Exception:
+                pass
 
-    def get_position(self) -> int:
+        return
 
-        if self.is_paused:
-            return int(
-                self.position
-            )
+    try:
 
-        if (
-            self.is_playing
-            and self.started_at
-        ):
-
-            return max(
-                0,
-                int(
-                    time.monotonic()
-                    - self.started_at
-                ),
-            )
-
-        return int(
-            self.position
+        result = await player_call(
+            "play_track",
+            current_chat,
+            track,
         )
 
-    # -----------------------------------------------------
-    # Status
-    # -----------------------------------------------------
+        # Only explicit False means failure.
+        if result is False:
 
-    def get_status(
-        self,
-    ) -> Dict[str, Any]:
+            _stats["errors"] += 1
 
-        position = self.get_position()
-
-        duration = 0
-
-        if self.current_track:
-            duration = int(
-                self.current_track.duration
-                or 0
+            text = (
+                "❌ پخش آهنگ انجام نشد.\n\n"
+                "⚠️ ویس‌چت گروه را فعال کن و "
+                "مطمئن شو اکانت دستیار داخل ویس‌چت است."
             )
 
-        return {
-            "available": self._available,
-            "is_playing": self.is_playing,
-            "is_paused": self.is_paused,
-            "current_track": (
-                self.current_track.title
-                if self.current_track
-                else None
-            ),
-            "current_chat_id": (
-                self.current_chat_id
-            ),
-            "volume": self.volume,
-            "position": position,
-            "duration": duration,
-            "queue_size": len(
-                self.queue
-            ),
-        }
+        else:
 
-    # -----------------------------------------------------
-    # Cleanup
-    # -----------------------------------------------------
+            _stats["plays"] += 1
 
-    async def cleanup_files(
-        self,
-        max_files: int = 30,
+            text = (
+                "🎵 **پخش شروع شد**\n\n"
+                f"🎧 {track.title}\n"
+                f"👤 {track.uploader}"
+            )
+
+        if progress:
+            try:
+                await progress.edit_text(
+                    text,
+                    reply_markup=controls(),
+                )
+            except Exception:
+                pass
+
+    except Exception:
+
+        _stats["errors"] += 1
+
+        logger.exception(
+            "Playback failed"
+        )
+
+        if progress:
+            try:
+                await progress.edit_text(
+                    "❌ پخش آهنگ انجام نشد."
+                )
+            except Exception:
+                pass
+
+
+# ============================================================
+# Commands
+# ============================================================
+
+async def cmd_play(
+    client,
+    message,
+):
+    await play_replied_audio(
+        client,
+        message,
+    )
+
+
+async def cmd_pause(
+    client,
+    message,
+):
+    if not is_music_admin(
+        message.from_user.id
     ):
+        return await reply(
+            message,
+            "⛔ فقط مدیر موزیک دسترسی دارد.",
+        )
+
+    result = await player_call(
+        "pause",
+        chat_id(message),
+    )
+
+    await reply(
+        message,
+        "⏸️ موزیک مکث شد."
+        if result is not False
+        else "❌ مکث انجام نشد.",
+    )
+
+
+async def cmd_resume(
+    client,
+    message,
+):
+    if not is_music_admin(
+        message.from_user.id
+    ):
+        return await reply(
+            message,
+            "⛔ فقط مدیر موزیک دسترسی دارد.",
+        )
+
+    result = await player_call(
+        "resume",
+        chat_id(message),
+    )
+
+    await reply(
+        message,
+        "▶️ پخش ادامه یافت."
+        if result is not False
+        else "❌ ادامه پخش انجام نشد.",
+    )
+
+
+async def cmd_stop(
+    client,
+    message,
+):
+    if not is_music_admin(
+        message.from_user.id
+    ):
+        return await reply(
+            message,
+            "⛔ فقط مدیر موزیک دسترسی دارد.",
+        )
+
+    result = await player_call(
+        "stop",
+        chat_id(message),
+    )
+
+    await reply(
+        message,
+        "⏹️ پخش متوقف شد."
+        if result is not False
+        else "❌ توقف انجام نشد.",
+    )
+
+
+async def cmd_next(
+    client,
+    message,
+):
+    if not is_music_admin(
+        message.from_user.id
+    ):
+        return await reply(
+            message,
+            "⛔ فقط مدیر موزیک دسترسی دارد.",
+        )
+
+    result = await player_call(
+        "next",
+        chat_id(message),
+    )
+
+    await reply(
+        message,
+        "⏭️ آهنگ بعدی اجرا شد."
+        if result is not False
+        else "❌ آهنگ بعدی موجود نیست.",
+    )
+
+
+async def cmd_previous(
+    client,
+    message,
+):
+    if not is_music_admin(
+        message.from_user.id
+    ):
+        return await reply(
+            message,
+            "⛔ فقط مدیر موزیک دسترسی دارد.",
+        )
+
+    result = await player_call(
+        "previous",
+        chat_id(message),
+    )
+
+    await reply(
+        message,
+        "⏮️ آهنگ قبلی اجرا شد."
+        if result is not False
+        else "❌ آهنگ قبلی موجود نیست.",
+    )
+
+
+async def cmd_id(
+    client,
+    message,
+):
+    user = message.from_user
+
+    if not user:
+        return
+
+    if is_owner(user.id):
+        role = "👑 مالک ربات"
+    elif is_music_admin(user.id):
+        role = "🎧 مدیر موزیک"
+    else:
+        role = "👤 کاربر"
+
+    await reply(
+        message,
+        "🆔 **اطلاعات کاربر**\n\n"
+        f"👤 نام: {user.first_name or 'نامشخص'}\n"
+        f"🔢 آیدی: `{user.id}`\n"
+        f"👑 نقش: {role}",
+    )
+
+
+async def cmd_status(
+    client,
+    message,
+):
+    uptime = int(
+        time.time()
+        - _stats["started_at"]
+    )
+
+    hours = uptime // 3600
+    minutes = (uptime % 3600) // 60
+    seconds = uptime % 60
+
+    await reply(
+        message,
+        "🎧 **وضعیت ربات**\n\n"
+        "🟢 آنلاین\n"
+        f"⏱️ {hours:02d}:{minutes:02d}:{seconds:02d}\n"
+        f"🎵 پخش‌ها: {_stats['plays']}\n"
+        f"❌ خطاها: {_stats['errors']}",
+    )
+
+
+async def cmd_robot(
+    client,
+    message,
+):
+    await reply(
+        message,
+        "🟢 ربات سایلنت همیشه آنلاین می‌باشد.",
+    )
+
+
+async def cmd_start(
+    client,
+    message,
+):
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "🎵 راهنمای پخش",
+                    callback_data="music_help",
+                ),
+                InlineKeyboardButton(
+                    "🆔 آیدی",
+                    callback_data="music_id",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "🎧 وضعیت",
+                    callback_data="music_status",
+                )
+            ],
+        ]
+    )
+
+    await message.reply_text(
+        "🎵 **ربات موزیک سایلنت**\n\n"
+        "روی فایل آهنگ ریپلای کن و فقط «پخش» بفرست.",
+        reply_markup=keyboard,
+    )
+
+
+async def cmd_promote(
+    client,
+    message,
+):
+    if not is_owner(
+        message.from_user.id
+    ):
+        return await reply(
+            message,
+            "⛔ فقط مالک ربات دسترسی دارد.",
+        )
+
+    target_message = getattr(
+        message,
+        "reply_to_message",
+        None,
+    )
+
+    target = getattr(
+        target_message,
+        "from_user",
+        None,
+    )
+
+    if not target:
+        return await reply(
+            message,
+            "👤 روی کاربر ریپلای کن.",
+        )
+
+    _music_admins.add(
+        target.id
+    )
+
+    await reply(
+        message,
+        f"👑 {target.first_name} مدیر موزیک شد.",
+    )
+
+
+async def cmd_demote(
+    client,
+    message,
+):
+    if not is_owner(
+        message.from_user.id
+    ):
+        return await reply(
+            message,
+            "⛔ فقط مالک ربات دسترسی دارد.",
+        )
+
+    target_message = getattr(
+        message,
+        "reply_to_message",
+        None,
+    )
+
+    target = getattr(
+        target_message,
+        "from_user",
+        None,
+    )
+
+    if not target:
+        return await reply(
+            message,
+            "👤 روی کاربر ریپلای کن.",
+        )
+
+    _music_admins.discard(
+        target.id
+    )
+
+    await reply(
+        message,
+        f"👤 {target.first_name} از مدیریت موزیک عزل شد.",
+    )
+
+
+async def cmd_music_owner(
+    client,
+    message,
+):
+    global _music_owner_id
+
+    if not is_owner(
+        message.from_user.id
+    ):
+        return await reply(
+            message,
+            "⛔ فقط مالک فعلی دسترسی دارد.",
+        )
+
+    target_message = getattr(
+        message,
+        "reply_to_message",
+        None,
+    )
+
+    target = getattr(
+        target_message,
+        "from_user",
+        None,
+    )
+
+    if not target:
+        return await reply(
+            message,
+            "👤 روی کاربر ریپلای کن.",
+        )
+
+    _music_owner_id = target.id
+
+    await reply(
+        message,
+        f"👑 مالک موزیک به {target.first_name} تغییر کرد.",
+    )
+
+
+async def cmd_volume(
+    client,
+    message,
+):
+    if not is_music_admin(
+        message.from_user.id
+    ):
+        return await reply(
+            message,
+            "⛔ فقط مدیر موزیک دسترسی دارد.",
+        )
+
+    parts = (
+        message.text or ""
+    ).split()
+
+    value = 100
+
+    if len(parts) > 1:
+        try:
+            value = int(parts[1])
+        except ValueError:
+            value = 100
+
+    value = max(
+        1,
+        min(200, value),
+    )
+
+    result = await player_call(
+        "set_volume",
+        chat_id(message),
+        value,
+    )
+
+    await reply(
+        message,
+        f"🔊 صدا روی {value}% تنظیم شد."
+        if result is not False
+        else "❌ تغییر صدا انجام نشد.",
+    )
+
+
+async def seek(
+    message,
+    forward: bool,
+):
+    if not is_music_admin(
+        message.from_user.id
+    ):
+        return await reply(
+            message,
+            "⛔ فقط مدیر موزیک دسترسی دارد.",
+        )
+
+    parts = (
+        message.text or ""
+    ).split()
+
+    seconds = 10
+
+    if len(parts) > 1:
+        try:
+            seconds = int(parts[1])
+        except ValueError:
+            seconds = 10
+
+    seconds = max(
+        1,
+        min(100, seconds),
+    )
+
+    method = (
+        "forward"
+        if forward
+        else "backward"
+    )
+
+    result = await player_call(
+        method,
+        chat_id(message),
+        seconds,
+    )
+
+    symbol = (
+        "⏩"
+        if forward
+        else "⏪"
+    )
+
+    await reply(
+        message,
+        f"{symbol} {seconds} ثانیه انجام شد."
+        if result is not False
+        else "❌ عملیات انجام نشد.",
+    )
+
+
+async def cmd_forward(
+    client,
+    message,
+):
+    await seek(
+        message,
+        True,
+    )
+
+
+async def cmd_backward(
+    client,
+    message,
+):
+    await seek(
+        message,
+        False,
+    )
+
+
+# ============================================================
+# Buttons
+# ============================================================
+
+def controls():
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "⏸ مکث",
+                    callback_data="music_pause",
+                ),
+                InlineKeyboardButton(
+                    "▶️ ادامه",
+                    callback_data="music_resume",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "⏭ بعدی",
+                    callback_data="music_next",
+                ),
+                InlineKeyboardButton(
+                    "⏹ اتمام",
+                    callback_data="music_stop",
+                ),
+            ],
+        ]
+    )
+
+
+async def callbacks(
+    client,
+    query,
+):
+    try:
+        data = query.data or ""
+
+        message = query.message
+
+        current_chat = getattr(
+            getattr(
+                message,
+                "chat",
+                None,
+            ),
+            "id",
+            None,
+        )
+
+        user_id = query.from_user.id
+
+        if data == "music_help":
+
+            await query.answer(
+                "روی فایل آهنگ ریپلای کن و «پخش» بزن.",
+                show_alert=True,
+            )
+
+        elif data == "music_id":
+
+            await query.answer(
+                f"🆔 {user_id}",
+                show_alert=True,
+            )
+
+        elif data == "music_status":
+
+            await query.answer(
+                "🟢 ربات آنلاین است.",
+                show_alert=True,
+            )
+
+        elif data == "music_pause":
+
+            if not is_music_admin(user_id):
+                return await query.answer(
+                    "⛔ دسترسی ندارید.",
+                    show_alert=True,
+                )
+
+            result = await player_call(
+                "pause",
+                current_chat,
+            )
+
+            await query.answer(
+                "⏸️ مکث شد."
+                if result is not False
+                else "❌ انجام نشد.",
+            )
+
+        elif data == "music_resume":
+
+            if not is_music_admin(user_id):
+                return await query.answer(
+                    "⛔ دسترسی ندارید.",
+                    show_alert=True,
+                )
+
+            result = await player_call(
+                "resume",
+                current_chat,
+            )
+
+            await query.answer(
+                "▶️ ادامه یافت."
+                if result is not False
+                else "❌ انجام نشد.",
+            )
+
+        elif data == "music_next":
+
+            if not is_music_admin(user_id):
+                return await query.answer(
+                    "⛔ دسترسی ندارید.",
+                    show_alert=True,
+                )
+
+            result = await player_call(
+                "next",
+                current_chat,
+            )
+
+            await query.answer(
+                "⏭️ اجرا شد."
+                if result is not False
+                else "❌ آهنگ بعدی نیست.",
+            )
+
+        elif data == "music_stop":
+
+            if not is_music_admin(user_id):
+                return await query.answer(
+                    "⛔ دسترسی ندارید.",
+                    show_alert=True,
+                )
+
+            result = await player_call(
+                "stop",
+                current_chat,
+            )
+
+            await query.answer(
+                "⏹️ متوقف شد."
+                if result is not False
+                else "❌ انجام نشد.",
+            )
+
+    except Exception:
+
+        logger.exception(
+            "Callback error"
+        )
 
         try:
-
-            files = []
-
-            for path in (
-                self.downloader.downloads_dir.iterdir()
-            ):
-
-                if not path.is_file():
-                    continue
-
-                if path.suffix.lower() not in {
-                    ".mp3",
-                    ".m4a",
-                    ".webm",
-                    ".opus",
-                    ".ogg",
-                    ".wav",
-                    ".aac",
-                    ".flac",
-                }:
-                    continue
-
-                files.append(path)
-
-            files.sort(
-                key=lambda p: p.stat().st_mtime,
-                reverse=True,
+            await query.answer(
+                "❌ عملیات انجام نشد.",
+                show_alert=True,
             )
-
-            for path in files[max_files:]:
-
-                try:
-                    path.unlink()
-                except Exception:
-                    pass
-
         except Exception:
-
-            logger.exception(
-                "Cleanup failed"
-            )
+            pass
 
 
-# =========================================================
-# Global downloader
-# =========================================================
+# ============================================================
+# Registration
+# ============================================================
 
-downloader = MusicDownloader()
+def register_handlers():
+    global _handlers_registered
+
+    if _handlers_registered:
+        return
+
+    if bot is None:
+        logger.error(
+            "Cannot register handlers: bot is None"
+        )
+        return
+
+    # -------------------------
+    # Private
+    # -------------------------
+
+    bot.add_handler(
+        MessageHandler(
+            cmd_start,
+            filters.private
+            & (
+                filters.command("start")
+                | filters.regex(r"^استارت$")
+            ),
+        )
+    )
+
+    # -------------------------
+    # Group
+    # -------------------------
+
+    bot.add_handler(
+        MessageHandler(
+            cmd_robot,
+            filters.group
+            & filters.regex(r"^ربات$"),
+        )
+    )
+
+    bot.add_handler(
+        MessageHandler(
+            cmd_play,
+            filters.group
+            & filters.regex(
+                r"^(?:پخش|/پخش)(?:\s+.*)?$"
+            ),
+        )
+    )
+
+    bot.add_handler(
+        MessageHandler(
+            cmd_pause,
+            filters.group
+            & filters.regex(
+                r"^(?:مکث|/مکث)$"
+            ),
+        )
+    )
+
+    bot.add_handler(
+        MessageHandler(
+            cmd_resume,
+            filters.group
+            & filters.regex(
+                r"^(?:ادامه|/ادامه)$"
+            ),
+        )
+    )
+
+    bot.add_handler(
+        MessageHandler(
+            cmd_stop,
+            filters.group
+            & filters.regex(
+                r"^(?:اتمام|/اتمام)$"
+            ),
+        )
+    )
+
+    bot.add_handler(
+        MessageHandler(
+            cmd_next,
+            filters.group
+            & filters.regex(
+                r"^(?:بعدی|/بعدی)$"
+            ),
+        )
+    )
+
+    bot.add_handler(
+        MessageHandler(
+            cmd_previous,
+            filters.group
+            & filters.regex(
+                r"^(?:قبلی|/قبلی)$"
+            ),
+        )
+    )
+
+    bot.add_handler(
+        MessageHandler(
+            cmd_forward,
+            filters.group
+            & filters.regex(
+                r"^(?:جلو|/جلو)(?:\s+\d+)?$"
+            ),
+        )
+    )
+
+    bot.add_handler(
+        MessageHandler(
+            cmd_backward,
+            filters.group
+            & filters.regex(
+                r"^(?:عقب|/عقب)(?:\s+\d+)?$"
+            ),
+        )
+    )
+
+    bot.add_handler(
+        MessageHandler(
+            cmd_volume,
+            filters.group
+            & filters.regex(
+                r"^(?:صدا|/صدا)(?:\s+\d+)?$"
+            ),
+        )
+    )
+
+    bot.add_handler(
+        MessageHandler(
+            cmd_id,
+            filters.group
+            & filters.regex(
+                r"^(?:آیدی|/آیدی)$"
+            ),
+        )
+    )
+
+    bot.add_handler(
+        MessageHandler(
+            cmd_status,
+            filters.group
+            & filters.regex(
+                r"^(?:وضعیت|/وضعیت)$"
+            ),
+        )
+    )
+
+    bot.add_handler(
+        MessageHandler(
+            cmd_promote,
+            filters.group
+            & filters.regex(
+                r"^(?:ترفیع موزیک|/ترفیع_موزیک)$"
+            ),
+        )
+    )
+
+    bot.add_handler(
+        MessageHandler(
+            cmd_demote,
+            filters.group
+            & filters.regex(
+                r"^(?:عزل موزیک|/عزل_موزیک)$"
+            ),
+        )
+    )
+
+    bot.add_handler(
+        MessageHandler(
+            cmd_music_owner,
+            filters.group
+            & filters.regex(
+                r"^(?:مالک موزیک|/مالک_موزیک)$"
+            ),
+        )
+    )
+
+    # -------------------------
+    # Callback buttons
+    # -------------------------
+
+    bot.add_handler(
+        CallbackQueryHandler(
+            callbacks,
+            filters.regex(r"^music_"),
+        )
+    )
+
+    _handlers_registered = True
+
+    logger.info(
+        "🟢 SILENT Persian music handlers registered successfully"
+    )
+
+
+# ============================================================
+# Main.py integration
+# ============================================================
+
+def set_bot_instances(
+    app,
+    calls,
+    music_player,
+    stop_event=None,
+):
+    global bot
+    global pytgcalls
+    global player
+    global shutdown_event
+
+    bot = app
+    pytgcalls = calls
+    player = music_player
+    shutdown_event = stop_event
+
+    logger.info(
+        "Handlers received bot instance"
+    )
+
+    # Critical:
+    # main.py calls set_bot_instances().
+    # We register handlers here automatically.
+    register_handlers()
