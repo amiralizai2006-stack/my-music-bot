@@ -14,20 +14,38 @@ import pyrogram.errors
 
 # =========================================================
 # Pyrogram / PyTgCalls compatibility
+# این قسمت باید قبل از import کردن PyTgCalls باشد
 # =========================================================
 
-if not hasattr(pyrogram.errors, "GroupcallForbidden"):
-    if hasattr(pyrogram.errors, "GroupCallForbidden"):
+try:
+    pyrogram.errors.GroupcallForbidden
+except AttributeError:
+    try:
         pyrogram.errors.GroupcallForbidden = (
             pyrogram.errors.GroupCallForbidden
         )
+    except AttributeError:
+        class GroupcallForbidden(Exception):
+            pass
 
-if not hasattr(pyrogram.errors, "GroupcallInvalid"):
-    if hasattr(pyrogram.errors, "GroupCallInvalid"):
+        pyrogram.errors.GroupcallForbidden = GroupcallForbidden
+
+
+try:
+    pyrogram.errors.GroupcallInvalid
+except AttributeError:
+    try:
         pyrogram.errors.GroupcallInvalid = (
             pyrogram.errors.GroupCallInvalid
         )
+    except AttributeError:
+        class GroupcallInvalid(Exception):
+            pass
 
+        pyrogram.errors.GroupcallInvalid = GroupcallInvalid
+
+
+# فقط بعد از compatibility patch
 from pytgcalls import PyTgCalls
 
 
@@ -63,12 +81,8 @@ logging.basicConfig(
         "%(message)s"
     ),
     handlers=[
-        logging.FileHandler(
-            config.log_file
-        ),
-        logging.StreamHandler(
-            sys.stdout
-        ),
+        logging.FileHandler(config.log_file),
+        logging.StreamHandler(sys.stdout),
     ],
 )
 
@@ -76,27 +90,22 @@ logger = logging.getLogger(__name__)
 
 
 # =========================================================
-# Validate configuration
+# Configuration
 # =========================================================
 
 errors = validate_config()
 
 if errors:
-    logger.error(
-        "Configuration errors:"
-    )
+    logger.error("Configuration errors:")
 
     for error in errors:
-        logger.error(
-            "  - %s",
-            error,
-        )
+        logger.error("  - %s", error)
 
     sys.exit(1)
 
 
 # =========================================================
-# Secrets from Render Environment
+# Secrets
 # =========================================================
 
 API_ID = config.api_id
@@ -116,7 +125,7 @@ if not ASSISTANT_SESSION:
 
 
 # =========================================================
-# Telegram clients
+# Telegram Bot
 # =========================================================
 
 bot = Client(
@@ -125,6 +134,11 @@ bot = Client(
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
 )
+
+
+# =========================================================
+# Assistant User Account
+# =========================================================
 
 assistant = Client(
     "music_assistant",
@@ -149,7 +163,7 @@ player = MusicPlayer(
 
 
 # =========================================================
-# Shutdown
+# Shutdown state
 # =========================================================
 
 shutdown_event = asyncio.Event()
@@ -158,7 +172,7 @@ health_runner = None
 
 
 # =========================================================
-# Render health server
+# Health server for Render
 # =========================================================
 
 async def health_handler(request):
@@ -185,20 +199,20 @@ async def start_health_server():
         )
     )
 
-    app = web.Application()
+    health_app = web.Application()
 
-    app.router.add_get(
+    health_app.router.add_get(
         "/",
         health_handler,
     )
 
-    app.router.add_get(
+    health_app.router.add_get(
         "/health",
         health_handler,
     )
 
     health_runner = web.AppRunner(
-        app
+        health_app
     )
 
     await health_runner.setup()
@@ -212,7 +226,7 @@ async def start_health_server():
     await site.start()
 
     logger.info(
-        "🌐 Health server running on port %s",
+        "🌐 Render health server listening on port %s",
         port,
     )
 
@@ -253,10 +267,10 @@ async def startup():
         "✅ Database initialized"
     )
 
-    # Render web server
+    # Render health server
     await start_health_server()
 
-    # Bot
+    # Telegram Bot
     logger.info(
         "🤖 Starting Telegram Bot..."
     )
@@ -286,7 +300,7 @@ async def startup():
         assistant_me.first_name,
     )
 
-    # Voice chat
+    # PyTgCalls
     logger.info(
         "🎵 Starting PyTgCalls..."
     )
@@ -297,7 +311,7 @@ async def startup():
         "✅ PyTgCalls started successfully"
     )
 
-    # Handlers
+    # Register bot handlers
     set_bot_instances(
         bot,
         pytgcalls,
@@ -318,7 +332,7 @@ async def startup():
     )
 
     logger.info(
-        "🟢 Bot is running."
+        "🟢 Bot is running continuously."
     )
 
 
@@ -337,6 +351,7 @@ async def shutdown():
 
     shutdown_event.set()
 
+    # Leave voice chats
     try:
 
         await pytgcalls.leave_all_calls()
@@ -352,6 +367,7 @@ async def shutdown():
             e,
         )
 
+    # Stop PyTgCalls
     try:
 
         await pytgcalls.stop()
@@ -367,6 +383,7 @@ async def shutdown():
             e,
         )
 
+    # Stop assistant
     try:
 
         if assistant.is_connected:
@@ -380,10 +397,11 @@ async def shutdown():
     except Exception as e:
 
         logger.warning(
-            "Assistant shutdown error: %s",
+            "Assistant stop error: %s",
             e,
         )
 
+    # Stop bot
     try:
 
         if bot.is_connected:
@@ -397,10 +415,11 @@ async def shutdown():
     except Exception as e:
 
         logger.warning(
-            "Bot shutdown error: %s",
+            "Bot stop error: %s",
             e,
         )
 
+    # Stop health server
     await stop_health_server()
 
     logger.info(
@@ -409,7 +428,7 @@ async def shutdown():
 
 
 # =========================================================
-# Signal handling
+# Signal handler
 # =========================================================
 
 def signal_handler(
