@@ -67,64 +67,67 @@ def _audio_artist(media):
     )
 
 
-async def _download_and_play(
-    message: Message,
-    track: TrackInfo,
-):
+async def _download_and_play(message: Message, track: TrackInfo):
+
+    logger.info(
+        "========== DOWNLOAD PIPELINE START =========="
+    )
+
+    logger.info(
+        "DOWNLOAD REQUEST | title=%s | webpage_url=%s | url=%s",
+        track.title,
+        track.webpage_url,
+        track.url,
+    )
+
     if player is None:
-        await message.reply_text(
-            "❌ پخش‌کننده آماده نیست."
-        )
+        logger.error("PLAYER IS NONE")
+        await message.reply_text("❌ پخش‌کننده آماده نیست.")
         return
 
+    downloader = getattr(player, "downloader", None)
+
+    if downloader is None:
+        logger.error("DOWNLOADER IS NONE")
+        await message.reply_text("❌ دانلودر آماده نیست.")
+        return
+
+    await message.reply_text("⏳ در حال دانلود...")
+
     try:
-        await message.reply_text(
-            "⏳ در حال دانلود..."
+        logger.info(
+            "CALLING DOWNLOADER.DOWNLOAD | title=%s",
+            track.title,
         )
+
+        filepath = await downloader.download(track)
 
         logger.info(
-            "DOWNLOAD REQUEST | title=%s | webpage=%s | url=%s",
-            track.title,
-            track.webpage_url,
-            track.url,
-        )
-
-        downloader = getattr(
-            player,
-            "downloader",
-            None,
-        )
-
-        if downloader is None:
-            logger.error(
-                "PLAYER DOWNLOADER IS NONE"
-            )
-
-            await message.reply_text(
-                "❌ دانلودر آماده نیست."
-            )
-            return
-
-        filepath = await downloader.download(
-            track
+            "DOWNLOADER RETURNED | filepath=%r",
+            filepath,
         )
 
         if not filepath:
             logger.error(
-                "DOWNLOAD RETURNED NONE | title=%s",
-                track.title,
+                "DOWNLOAD FAILED: DOWNLOADER RETURNED NONE"
             )
 
             await message.reply_text(
-                "❌ دانلود آهنگ انجام نشد."
+                "❌ دانلود انجام نشد.\n\n"
+                "جزئیات خطا در Logs ثبت شد."
             )
             return
 
         track.filepath = filepath
 
         logger.info(
-            "DOWNLOAD COMPLETE | %s",
+            "DOWNLOAD SUCCESS | file=%s",
             filepath,
+        )
+
+        logger.info(
+            "CALLING PLAYER.PLAY | chat=%s",
+            message.chat.id,
         )
 
         ok = await player.play(
@@ -132,9 +135,14 @@ async def _download_and_play(
             track,
         )
 
+        logger.info(
+            "PLAYER.PLAY RESULT | %r",
+            ok,
+        )
+
         if not ok:
             await message.reply_text(
-                "❌ پخش آهنگ انجام نشد."
+                "❌ آهنگ دانلود شد ولی پخش نشد."
             )
             return
 
@@ -144,15 +152,20 @@ async def _download_and_play(
             f"👤 {track.artist}"
         )
 
+        logger.info(
+            "========== DOWNLOAD PIPELINE SUCCESS =========="
+        )
+
     except Exception as e:
+
         logger.exception(
-            "PLAY/DOWNLOAD ERROR | %s: %s",
+            "DOWNLOAD PIPELINE ERROR | %s: %s",
             type(e).__name__,
             str(e),
         )
 
         await message.reply_text(
-            f"❌ خطای پخش: "
+            f"❌ خطای دانلود:\n"
             f"{type(e).__name__}: {e}"
         )
 
@@ -178,10 +191,8 @@ def register_handlers():
     @bot.on_message(
         filters.group & filters.command("start")
     )
-    async def start_handler(
-        client,
-        message,
-    ):
+    async def start_handler(client, message):
+
         await message.reply_text(
             "🎵 سلام!\n\n"
             "به ربات موزیک پلیر خوش آمدید.\n\n"
@@ -198,10 +209,8 @@ def register_handlers():
         filters.text
         & filters.regex(r"^\s*کمک\s*$")
     )
-    async def help_handler(
-        client,
-        message,
-    ):
+    async def help_handler(client, message):
+
         await message.reply_text(
             "🎵 دستورات موزیک:\n\n"
             "پخش نام آهنگ\n"
@@ -223,10 +232,8 @@ def register_handlers():
             r"^\s*پخش(?:\s+(.+))?\s*$"
         )
     )
-    async def play_handler(
-        client,
-        message,
-    ):
+    async def play_handler(client, message):
+
         text = message.text or ""
 
         match = re.match(
@@ -241,21 +248,18 @@ def register_handlers():
         )
 
         logger.info(
-            "PLAY RECEIVED | chat=%s | text=%r | query=%r",
+            "PLAY RECEIVED | chat=%s | query=%r",
             message.chat.id,
-            text,
             query,
         )
 
-        # -------------------------
-        # REPLY TO AUDIO
-        # -------------------------
+        # =========================
+        # REPLY AUDIO
+        # =========================
 
         if not query:
 
-            media = _get_reply_audio(
-                message
-            )
+            media = _get_reply_audio(message)
 
             if not media:
                 await message.reply_text(
@@ -268,15 +272,6 @@ def register_handlers():
             )
 
             try:
-
-                file_name = (
-                    getattr(
-                        media,
-                        "file_name",
-                        None,
-                    )
-                    or f"audio_{message.id}.mp3"
-                )
 
                 downloads_dir = Path(
                     getattr(
@@ -291,6 +286,15 @@ def register_handlers():
                     exist_ok=True,
                 )
 
+                file_name = (
+                    getattr(
+                        media,
+                        "file_name",
+                        None,
+                    )
+                    or f"audio_{message.id}.mp3"
+                )
+
                 filepath = await client.download_media(
                     message.reply_to_message,
                     file_name=str(
@@ -299,6 +303,7 @@ def register_handlers():
                 )
 
                 if not filepath:
+
                     await message.reply_text(
                         "❌ دریافت فایل آهنگ انجام نشد."
                     )
@@ -311,8 +316,7 @@ def register_handlers():
                 )
 
                 logger.info(
-                    "REPLY AUDIO READY | title=%s | file=%s",
-                    track.title,
+                    "REPLY AUDIO READY | file=%s",
                     filepath,
                 )
 
@@ -322,6 +326,7 @@ def register_handlers():
                 )
 
                 if not ok:
+
                     await message.reply_text(
                         "❌ پخش آهنگ انجام نشد."
                     )
@@ -342,15 +347,15 @@ def register_handlers():
                 )
 
                 await message.reply_text(
-                    f"❌ خطای پخش: "
+                    f"❌ خطای پخش:\n"
                     f"{type(e).__name__}: {e}"
                 )
 
             return
 
-        # -------------------------
-        # SEARCH BY NAME
-        # -------------------------
+        # =========================
+        # SEARCH
+        # =========================
 
         await message.reply_text(
             f"🔎 در حال جستجوی:\n"
@@ -359,9 +364,19 @@ def register_handlers():
 
         try:
 
+            logger.info(
+                "SEARCH START | query=%s",
+                query,
+            )
+
             results = await player.downloader.search(
                 query,
                 limit=1,
+            )
+
+            logger.info(
+                "SEARCH RESULT COUNT | %s",
+                len(results) if results else 0,
             )
 
             if not results:
@@ -374,11 +389,10 @@ def register_handlers():
             track = results[0]
 
             logger.info(
-                "SEARCH RESULT SELECTED | title=%s | artist=%s | webpage=%s | url=%s",
+                "SEARCH RESULT SELECTED | title=%s | artist=%s | webpage=%s",
                 track.title,
                 track.artist,
                 track.webpage_url,
-                track.url,
             )
 
             await message.reply_text(
@@ -387,6 +401,7 @@ def register_handlers():
                 f"👤 {track.artist}"
             )
 
+            # مستقیم وارد دانلود می‌شود
             await _download_and_play(
                 message,
                 track,
@@ -401,7 +416,7 @@ def register_handlers():
             )
 
             await message.reply_text(
-                f"❌ خطای پخش: "
+                f"❌ خطای پخش:\n"
                 f"{type(e).__name__}: {e}"
             )
 
@@ -413,10 +428,8 @@ def register_handlers():
         filters.text
         & filters.regex(r"^\s*مکث\s*$")
     )
-    async def pause_handler(
-        client,
-        message,
-    ):
+    async def pause_handler(client, message):
+
         if player is None:
             return
 
@@ -438,10 +451,8 @@ def register_handlers():
         filters.text
         & filters.regex(r"^\s*ادامه\s*$")
     )
-    async def resume_handler(
-        client,
-        message,
-    ):
+    async def resume_handler(client, message):
+
         if player is None:
             return
 
@@ -463,10 +474,8 @@ def register_handlers():
         filters.text
         & filters.regex(r"^\s*اتمام\s*$")
     )
-    async def stop_handler(
-        client,
-        message,
-    ):
+    async def stop_handler(client, message):
+
         if player is None:
             return
 
