@@ -3,597 +3,404 @@
 import asyncio
 import logging
 import os
-import signal
 import sys
+import signal
 from pathlib import Path
 
-import pyrogram.errors
-
-# =========================================================
-# PYROGRAM COMPATIBILITY
-# =========================================================
-
-if not hasattr(pyrogram.errors, "GroupcallForbidden"):
-    if hasattr(pyrogram.errors, "GroupCallForbidden"):
-        pyrogram.errors.GroupcallForbidden = (
-            pyrogram.errors.GroupCallForbidden
-        )
-    else:
-        class GroupcallForbidden(Exception):
-            pass
-
-        pyrogram.errors.GroupcallForbidden = GroupcallForbidden
-
-
-if not hasattr(pyrogram.errors, "GroupcallInvalid"):
-    if hasattr(pyrogram.errors, "GroupCallInvalid"):
-        pyrogram.errors.GroupcallInvalid = (
-            pyrogram.errors.GroupCallInvalid
-        )
-    else:
-        class GroupcallInvalid(Exception):
-            pass
-
-        pyrogram.errors.GroupcallInvalid = GroupcallInvalid
-
-
 from aiohttp import web
-from pyrogram import Client
-from pytgcalls import PyTgCalls
 
-# =========================================================
-# PATH
-# =========================================================
-
-BASE_DIR = Path(__file__).resolve().parent
-
-if str(BASE_DIR) not in sys.path:
-    sys.path.insert(0, str(BASE_DIR))
-
-
-# =========================================================
-# PROJECT IMPORTS
-# =========================================================
+# Project root
+sys.path.insert(0, str(Path(__file__).parent))
 
 from config import config, validate_config
 from database import db
 from player import MusicPlayer
-from handlers import (
-    set_bot_instances,
-    register_handlers,
+from optional_deps import (
+    VOICE_CHAT_AVAILABLE,
+    PyTgCalls,
+    check_voice_chat_support,
+    get_platform_info,
 )
+from handlers import set_bot_instances
+from pyrogram import Client
 
 
-# =========================================================
+# ============================================================
 # LOGGING
-# =========================================================
+# ============================================================
 
 logging.basicConfig(
-    level=getattr(
-        logging,
-        getattr(
-            config,
-            "log_level",
-            "INFO",
-        ).upper(),
-        logging.INFO,
-    ),
-    format=(
-        "%(asctime)s - "
-        "%(name)s - "
-        "%(levelname)s - "
-        "%(message)s"
-    ),
+    level=getattr(logging, config.log_level, logging.INFO),
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.StreamHandler(sys.stdout)
+        logging.FileHandler(config.log_file),
+        logging.StreamHandler(sys.stdout),
     ],
 )
 
-logger = logging.getLogger(
-    "PersianMusicBot"
-)
+logger = logging.getLogger(__name__)
 
 
-# =========================================================
-# CONFIGURATION
-# =========================================================
+# ============================================================
+# RENDER HEALTH SERVER
+# ============================================================
 
-config_errors = validate_config()
-
-if config_errors:
-
-    logger.error(
-        "Configuration errors:"
-    )
-
-    for error in config_errors:
-        logger.error(
-            "  - %s",
-            error,
-        )
-
-    sys.exit(1)
+PORT = int(os.getenv("PORT", "10000"))
 
 
-API_ID = config.api_id
-API_HASH = config.api_hash
-BOT_TOKEN = config.bot_token
-
-
-ASSISTANT_SESSION = os.getenv(
-    "ASSISTANT_SESSION",
-    "",
-).strip()
-
-
-if not ASSISTANT_SESSION:
-
-    logger.error(
-        "ASSISTANT_SESSION is not configured."
-    )
-
-    sys.exit(1)
-
-
-# =========================================================
-# TELEGRAM CLIENTS
-# =========================================================
-
-bot = Client(
-    "telegram_music_bot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN,
-)
-
-
-assistant = Client(
-    "music_assistant",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    session_string=ASSISTANT_SESSION,
-    in_memory=True,
-)
-
-
-# =========================================================
-# GLOBAL OBJECTS
-# =========================================================
-
-pytgcalls = None
-player = None
-shutdown_event = None
-health_runner = None
-
-
-# =========================================================
-# HEALTH SERVER
-# =========================================================
-
-async def health_handler(request):
-
+async def health(request):
     return web.json_response(
         {
             "status": "ok",
-            "service": "Persian Telegram Music Bot",
-            "bot": bot.is_connected,
-            "assistant": assistant.is_connected,
-            "voice_chat": (
-                pytgcalls is not None
-            ),
+            "service": "SILENT MUSIC BOT",
+            "telegram": "online",
         }
     )
 
 
 async def start_health_server():
-
-    global health_runner
-
-    port = int(
-        os.getenv(
-            "PORT",
-            "10000",
-        )
-    )
-
     app = web.Application()
+    app.router.add_get("/", health)
+    app.router.add_get("/health", health)
 
-    app.router.add_get(
-        "/",
-        health_handler,
-    )
-
-    app.router.add_get(
-        "/health",
-        health_handler,
-    )
-
-    health_runner = web.AppRunner(
-        app
-    )
-
-    await health_runner.setup()
+    runner = web.AppRunner(app)
+    await runner.setup()
 
     site = web.TCPSite(
-        health_runner,
-        "0.0.0.0",
-        port,
+        runner,
+        host="0.0.0.0",
+        port=PORT,
     )
 
     await site.start()
 
     logger.info(
-        "Health server started on port %s",
-        port,
+        "🌐 Render health server started on 0.0.0.0:%s",
+        PORT,
+    )
+
+    return runner
+
+
+# ============================================================
+# PLATFORM
+# ============================================================
+
+platform_info = get_platform_info()
+
+logger.info("=== Platform Info ===")
+
+for key, value in platform_info.items():
+    logger.info("%s: %s", key, value)
+
+logger.info("=====================")
+
+
+# ============================================================
+# CONFIG
+# ============================================================
+
+errors = validate_config()
+
+if errors:
+    logger.error("Configuration errors:")
+
+    for error in errors:
+        logger.error(" - %s", error)
+
+    sys.exit(1)
+
+
+voice_supported, voice_msg = check_voice_chat_support()
+
+if VOICE_CHAT_AVAILABLE:
+    logger.info("✅ Voice chat: AVAILABLE")
+else:
+    logger.warning(
+        "⚠️ Voice chat: NOT AVAILABLE - %s",
+        voice_msg,
     )
 
 
-async def stop_health_server():
+# ============================================================
+# PYROGRAM
+# ============================================================
+
+app = Client(
+    config.session_name,
+    api_id=config.api_id,
+    api_hash=config.api_hash,
+    bot_token=config.bot_token,
+)
+
+
+# ============================================================
+# PYTGCALLS
+# ============================================================
+
+pytgcalls = None
+
+if VOICE_CHAT_AVAILABLE:
+    try:
+        pytgcalls = PyTgCalls(app)
+        logger.info("✅ PyTgCalls object created")
+    except Exception:
+        logger.exception("❌ Failed to create PyTgCalls")
+        pytgcalls = None
+
+
+# ============================================================
+# PLAYER
+# ============================================================
+
+player = MusicPlayer(pytgcalls)
+
+
+# ============================================================
+# SHUTDOWN
+# ============================================================
+
+shutdown_event = asyncio.Event()
+health_runner = None
+
+
+# ============================================================
+# STARTUP
+# ============================================================
+
+async def startup():
 
     global health_runner
 
-    if health_runner is not None:
+    logger.info("🚀 Starting SILENT MUSIC BOT...")
+
+
+    # --------------------------------------------------------
+    # DATABASE
+    # --------------------------------------------------------
+
+    try:
+        await db.init()
+        logger.info("✅ Database initialized")
+    except Exception:
+        logger.exception("❌ Database initialization failed")
+        raise
+
+
+    # --------------------------------------------------------
+    # RENDER HEALTH SERVER
+    # --------------------------------------------------------
+
+    try:
+        health_runner = await start_health_server()
+    except Exception:
+        logger.exception(
+            "❌ Render health server could not start"
+        )
+        raise
+
+
+    # --------------------------------------------------------
+    # PYROGRAM
+    # --------------------------------------------------------
+
+    try:
+        await app.start()
+        logger.info("✅ Pyrogram client started")
+    except Exception:
+        logger.exception("❌ Pyrogram failed to start")
+        raise
+
+
+    # --------------------------------------------------------
+    # PYTGCALLS
+    # --------------------------------------------------------
+
+    if pytgcalls:
+
+        try:
+            await pytgcalls.start()
+            logger.info("✅ PyTgCalls started")
+
+        except Exception:
+            logger.exception(
+                "❌ PyTgCalls failed to start"
+            )
+
+    else:
+        logger.warning(
+            "⚠️ PyTgCalls is unavailable"
+        )
+
+
+    # --------------------------------------------------------
+    # HANDLERS
+    # --------------------------------------------------------
+
+    try:
+
+        set_bot_instances(
+            app,
+            pytgcalls,
+            player,
+            shutdown_event,
+        )
+
+        logger.info(
+            "✅ Telegram handlers registered"
+        )
+
+    except Exception:
+        logger.exception(
+            "❌ Handler registration failed"
+        )
+        raise
+
+
+    # --------------------------------------------------------
+    # BOT INFO
+    # --------------------------------------------------------
+
+    me = await app.get_me()
+
+    logger.info(
+        "🤖 Bot: @%s (%s)",
+        me.username,
+        me.first_name,
+    )
+
+    logger.info(
+        "📋 Admin IDs: %s",
+        config.admin_ids if config.admin_ids else "All users",
+    )
+
+
+    # --------------------------------------------------------
+    # READY
+    # --------------------------------------------------------
+
+    logger.info(
+        "=================================================="
+    )
+
+    logger.info(
+        "🟢 SILENT MUSIC BOT IS ONLINE"
+    )
+
+    logger.info(
+        "🟢 Render health server: PORT %s",
+        PORT,
+    )
+
+    logger.info(
+        "🎵 Persian commands are enabled"
+    )
+
+    logger.info(
+        "=================================================="
+    )
+
+
+# ============================================================
+# SHUTDOWN
+# ============================================================
+
+async def shutdown():
+
+    global health_runner
+
+    logger.info("🛑 Shutting down...")
+
+
+    shutdown_event.set()
+
+
+    # --------------------------------------------------------
+    # LEAVE CALLS
+    # --------------------------------------------------------
+
+    if pytgcalls:
+
+        try:
+            await pytgcalls.leave_all_calls()
+        except Exception:
+            logger.exception(
+                "Error leaving calls"
+            )
+
+
+    # --------------------------------------------------------
+    # PYTGCALLS STOP
+    # --------------------------------------------------------
+
+    if pytgcalls:
+
+        try:
+            await pytgcalls.stop()
+        except Exception:
+            logger.exception(
+                "Error stopping PyTgCalls"
+            )
+
+
+    # --------------------------------------------------------
+    # PYROGRAM STOP
+    # --------------------------------------------------------
+
+    try:
+        await app.stop()
+    except Exception:
+        logger.exception(
+            "Error stopping Pyrogram"
+        )
+
+
+    # --------------------------------------------------------
+    # HEALTH SERVER STOP
+    # --------------------------------------------------------
+
+    if health_runner:
 
         try:
             await health_runner.cleanup()
-
         except Exception:
-
             logger.exception(
-                "Health server shutdown error"
+                "Error stopping health server"
             )
 
         health_runner = None
 
 
-# =========================================================
-# STARTUP
-# =========================================================
-
-async def startup():
-
-    global pytgcalls
-    global player
-    global shutdown_event
-
     logger.info(
-        "========================================"
+        "✅ Shutdown complete"
     )
 
-    logger.info(
-        "Starting Persian Telegram Music Bot"
-    )
+
+# ============================================================
+# SIGNAL HANDLER
+# ============================================================
+
+def signal_handler(signum, frame):
 
     logger.info(
-        "========================================"
-    )
-
-    # -----------------------------------------------------
-    # DATABASE
-    # -----------------------------------------------------
-
-    logger.info(
-        "Initializing database..."
-    )
-
-    await db.init()
-
-    logger.info(
-        "Database initialized successfully"
-    )
-
-    # -----------------------------------------------------
-    # HEALTH SERVER
-    # -----------------------------------------------------
-
-    await start_health_server()
-
-    # -----------------------------------------------------
-    # TELEGRAM BOT
-    # -----------------------------------------------------
-
-    logger.info(
-        "Starting Telegram bot..."
-    )
-
-    await bot.start()
-
-    logger.info(
-        "Telegram bot started successfully"
-    )
-
-    # -----------------------------------------------------
-    # ASSISTANT
-    # -----------------------------------------------------
-
-    logger.info(
-        "Starting assistant account..."
-    )
-
-    await assistant.start()
-
-    logger.info(
-        "Assistant account started successfully"
+        "Received signal %s",
+        signum,
     )
 
     try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(shutdown())
+    except RuntimeError:
+        pass
 
-        assistant_me = await assistant.get_me()
 
-        assistant_username = (
-            f"@{assistant_me.username}"
-            if assistant_me.username
-            else "no username"
-        )
-
-        logger.info(
-            "Assistant: %s",
-            assistant_username,
-        )
-
-    except Exception:
-
-        logger.exception(
-            "Could not get assistant information"
-        )
-
-    # -----------------------------------------------------
-    # PYTGCALLS
-    # -----------------------------------------------------
-
-    logger.info(
-        "Creating PyTgCalls on current event loop..."
-    )
-
-    pytgcalls = PyTgCalls(
-        assistant
-    )
-
-    logger.info(
-        "PyTgCalls object created"
-    )
-
-    logger.info(
-        "Starting PyTgCalls..."
-    )
-
-    await pytgcalls.start()
-
-    logger.info(
-        "PyTgCalls started successfully"
-    )
-
-    # -----------------------------------------------------
-    # PLAYER
-    # -----------------------------------------------------
-
-    player = MusicPlayer(
-        pytgcalls
-    )
-
-    logger.info(
-        "MusicPlayer created"
-    )
-
-    # -----------------------------------------------------
-    # SHUTDOWN EVENT
-    # -----------------------------------------------------
-
-    shutdown_event = asyncio.Event()
-
-    # -----------------------------------------------------
-    # CONNECT OBJECTS TO HANDLERS
-    # -----------------------------------------------------
-
-    set_bot_instances(
-        bot,
-        pytgcalls,
-        player,
-        shutdown_event,
-    )
-
-    # IMPORTANT:
-    # Actually register Telegram message handlers.
-    register_handlers()
-
-    logger.info(
-        "Bot handlers registered successfully"
-    )
-
-    # -----------------------------------------------------
-    # BOT INFO
-    # -----------------------------------------------------
-
-    try:
-
-        bot_me = await bot.get_me()
-
-        bot_username = (
-            f"@{bot_me.username}"
-            if bot_me.username
-            else "no username"
-        )
-
-        logger.info(
-            "Bot: %s",
-            bot_username,
-        )
-
-    except Exception:
-
-        logger.exception(
-            "Could not get bot information"
-        )
-
-    # -----------------------------------------------------
-    # FINAL STATUS
-    # -----------------------------------------------------
-
-    logger.info(
-        "========================================"
-    )
-
-    logger.info(
-        "VOICE CHAT: READY"
-    )
-
-    logger.info(
-        "BOT: READY"
-    )
-
-    logger.info(
-        "ASSISTANT: READY"
-    )
-
-    logger.info(
-        "HANDLERS: READY"
-    )
-
-    logger.info(
-        "PERSIAN MUSIC BOT IS RUNNING"
-    )
-
-    logger.info(
-        "EVENT LOOP: %s",
-        id(asyncio.get_running_loop()),
-    )
-
-    logger.info(
-        "========================================"
-    )
-
-
-# =========================================================
-# SHUTDOWN
-# =========================================================
-
-async def shutdown():
-
-    global pytgcalls
-
-    logger.info(
-        "Shutting down bot..."
-    )
-
-    # -----------------------------------------------------
-    # VOICE CALLS
-    # -----------------------------------------------------
-
-    if pytgcalls is not None:
-
-        try:
-
-            await pytgcalls.leave_all_calls()
-
-            logger.info(
-                "Voice chats closed"
-            )
-
-        except Exception:
-
-            logger.exception(
-                "Could not close voice chats"
-            )
-
-        try:
-
-            await pytgcalls.stop()
-
-            logger.info(
-                "PyTgCalls stopped"
-            )
-
-        except Exception:
-
-            logger.exception(
-                "PyTgCalls shutdown error"
-            )
-
-    # -----------------------------------------------------
-    # ASSISTANT
-    # -----------------------------------------------------
-
-    try:
-
-        if assistant.is_connected:
-
-            await assistant.stop()
-
-            logger.info(
-                "Assistant stopped"
-            )
-
-    except Exception:
-
-        logger.exception(
-            "Assistant shutdown error"
-        )
-
-    # -----------------------------------------------------
-    # BOT
-    # -----------------------------------------------------
-
-    try:
-
-        if bot.is_connected:
-
-            await bot.stop()
-
-            logger.info(
-                "Bot stopped"
-            )
-
-    except Exception:
-
-        logger.exception(
-            "Bot shutdown error"
-        )
-
-    # -----------------------------------------------------
-    # HEALTH SERVER
-    # -----------------------------------------------------
-
-    await stop_health_server()
-
-    logger.info(
-        "Shutdown complete"
-    )
-
-
-# =========================================================
-# SIGNAL HANDLING
-# =========================================================
-
-def request_shutdown():
-
-    global shutdown_event
-
-    if shutdown_event is None:
-        return
-
-    if not shutdown_event.is_set():
-
-        shutdown_event.set()
-
-
-# =========================================================
+# ============================================================
 # MAIN
-# =========================================================
+# ============================================================
 
 async def main():
 
-    global shutdown_event
-
     loop = asyncio.get_running_loop()
-
-    logger.info(
-        "MAIN EVENT LOOP: %s",
-        id(loop),
-    )
-
-    # -----------------------------------------------------
-    # SIGNALS
-    # -----------------------------------------------------
 
     for sig in (
         signal.SIGTERM,
@@ -601,35 +408,28 @@ async def main():
     ):
 
         try:
-
             loop.add_signal_handler(
                 sig,
-                request_shutdown,
+                signal_handler,
+                sig,
+                None,
             )
 
-        except (
-            NotImplementedError,
-            RuntimeError,
-        ):
-
+        except (NotImplementedError, RuntimeError):
             pass
+
 
     try:
 
         await startup()
 
+        # Keep process alive forever.
         await shutdown_event.wait()
-
-    except asyncio.CancelledError:
-
-        logger.info(
-            "Main task cancelled"
-        )
 
     except Exception:
 
         logger.exception(
-            "Fatal startup/runtime error"
+            "❌ Fatal startup/runtime error"
         )
 
         raise
@@ -639,28 +439,32 @@ async def main():
         await shutdown()
 
 
-# =========================================================
-# ENTRY POINT
-# =========================================================
+# ============================================================
+# RUN
+# ============================================================
 
 if __name__ == "__main__":
 
     try:
 
-        asyncio.run(
-            main()
-        )
+        asyncio.run(main())
 
     except KeyboardInterrupt:
 
         logger.info(
-            "Stopped by user"
+            "Stopped by keyboard interrupt"
         )
 
     except Exception:
 
         logger.exception(
-            "Fatal application error"
+            "❌ Application stopped بسبب خطا"
         )
 
         sys.exit(1)
+
+این اصلاح دقیقاً برای خطایی است که Render نشان داده: سرور روی "0.0.0.0:$PORT" باز می‌شود، بنابراین Render دیگر با "No open ports detected" سرویس را متوقف نمی‌کند.
+
+نکته مهم: قابلیت‌های فارسی فعلی در "handlers.py" را نگه می‌داریم؛ من کد فعلی مخزن را بررسی کردم و "استارت" فارسی و "ربات" و دستورات اصلی داخل آن هستند. دیتابیس هم در "main.py" قبل از شروع ربات مقداردهی می‌شود.
+
+بعد از جایگزین کردن "main.py"، Commit و Deploy کن. اگر این Deploy "Live" شد، مرحله بعدی را روی "player.py" انجام می‌دهیم تا قابلیت‌های واقعی بعدی/قبلی، جلو/عقب، صف، شروع/پایان کال و کنترل کامنت کال را کامل کنیم؛ چون صرفاً داشتن دکمه یا Handler برای این موارد کافی نیست و باید به پلیر وصل باشند.
