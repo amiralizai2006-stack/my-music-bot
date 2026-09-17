@@ -9,7 +9,7 @@ from typing import Optional, Any
 
 from pytgcalls.types import MediaStream
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("SILENT.player")
 
 
 # ============================================================
@@ -22,19 +22,70 @@ class TrackInfo:
     performer: str = ""
     artist: str = ""
     duration: int = 0
+
     url: str = ""
     webpage_url: str = ""
     thumbnail: str = ""
     uploader: str = ""
+
     filepath: str = ""
 
-    def __post_init__(self):
+    requested_by: int = 0
+    requested_name: str = ""
 
+    def __post_init__(self):
         if not self.performer:
             self.performer = self.artist
 
         if not self.artist:
             self.artist = self.performer
+
+        self.title = (
+            str(self.title or "موزیک")
+            .strip()
+            or "موزیک"
+        )
+
+        self.performer = (
+            str(self.performer or "")
+            .strip()
+        )
+
+        self.artist = (
+            str(self.artist or "")
+            .strip()
+        )
+
+    @property
+    def display_artist(self) -> str:
+        return (
+            self.performer
+            or self.artist
+            or self.uploader
+            or "ناشناخته"
+        )
+
+    @property
+    def duration_text(self) -> str:
+        seconds = max(
+            0,
+            int(self.duration or 0)
+        )
+
+        minutes, seconds = divmod(
+            seconds,
+            60
+        )
+
+        hours, minutes = divmod(
+            minutes,
+            60
+        )
+
+        if hours:
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+        return f"{minutes:02d}:{seconds:02d}"
 
 
 # ============================================================
@@ -43,15 +94,33 @@ class TrackInfo:
 
 class MusicDownloader:
 
-    def __init__(self, download_dir="downloads"):
+    YOUTUBE_CLIENTS = (
+        ["android_vr"],
+        ["web_safari"],
+        ["web_music"],
+        ["tv_simply"],
+        ["web"],
+    )
 
+    USER_AGENT = (
+        "Mozilla/5.0 "
+        "(X11; Linux x86_64) "
+        "AppleWebKit/537.36 "
+        "(KHTML, like Gecko) "
+        "Chrome/131.0 Safari/537.36"
+    )
+
+    def __init__(
+        self,
+        download_dir: str = "downloads",
+    ):
         self.download_dir = Path(
             download_dir
         )
 
         self.download_dir.mkdir(
             parents=True,
-            exist_ok=True
+            exist_ok=True,
         )
 
     # ========================================================
@@ -61,8 +130,8 @@ class MusicDownloader:
     async def search(
         self,
         query: str,
-        limit: int = 1
-    ):
+        limit: int = 1,
+    ) -> list[TrackInfo]:
 
         query = (
             query or ""
@@ -71,17 +140,22 @@ class MusicDownloader:
         if not query:
             return []
 
+        limit = max(
+            1,
+            min(int(limit), 10),
+        )
+
         return await asyncio.to_thread(
             self._search_sync,
             query,
-            limit
+            limit,
         )
 
     def _search_sync(
         self,
-        query,
-        limit=1
-    ):
+        query: str,
+        limit: int = 1,
+    ) -> list[TrackInfo]:
 
         import yt_dlp
 
@@ -92,71 +166,68 @@ class MusicDownloader:
         if query.startswith(
             ("http://", "https://")
         ):
-
             return self._extract_url(
                 yt_dlp,
                 query,
-                limit
+                limit,
             )
 
         # ----------------------------------------------------
-        # SEARCH SOURCES
-        # ----------------------------------------------------
-        #
-        # اول SoundCloud
-        # سپس YouTube
-        #
-        # اگر YouTube روی IP سرور Render
-        # bot-check بدهد، SoundCloud همچنان
-        # می‌تواند نتیجه بدهد.
+        # SEARCH ORDER
         # ----------------------------------------------------
 
-        sources = [
+        sources = (
             (
                 "soundcloud",
-                f"scsearch{limit}:{query}"
+                f"scsearch{limit}:{query}",
             ),
             (
                 "youtube",
-                f"ytsearch{limit}:{query}"
+                f"ytsearch{limit}:{query}",
             ),
-        ]
+        )
 
         for source_name, source in sources:
 
-            if source_name == "youtube":
+            try:
 
-                results = (
-                    self._youtube_search(
+                if source_name == "youtube":
+
+                    results = self._youtube_search(
                         yt_dlp,
                         source,
-                        limit
+                        limit,
                     )
-                )
 
-            else:
+                else:
 
-                results = (
-                    self._generic_search(
+                    results = self._generic_search(
                         yt_dlp,
                         source,
-                        limit
+                        limit,
                     )
-                )
 
-            if results:
+                if results:
 
-                logger.info(
-                    "SEARCH SUCCESS source=%s query=%s",
+                    logger.info(
+                        "SEARCH OK | source=%s | query=%s",
+                        source_name,
+                        query,
+                    )
+
+                    return results
+
+            except Exception:
+
+                logger.exception(
+                    "SEARCH ERROR | source=%s | query=%s",
                     source_name,
-                    query
+                    query,
                 )
 
-                return results
-
-        logger.error(
-            "ALL SEARCH SOURCES FAILED: %s",
-            query
+        logger.warning(
+            "NO SEARCH RESULT | %s",
+            query,
         )
 
         return []
@@ -168,9 +239,9 @@ class MusicDownloader:
     def _generic_search(
         self,
         yt_dlp,
-        source,
-        limit
-    ):
+        source: str,
+        limit: int,
+    ) -> list[TrackInfo]:
 
         options = {
             "quiet": True,
@@ -182,30 +253,25 @@ class MusicDownloader:
 
         try:
 
-            logger.info(
-                "Searching generic source: %s",
-                source
-            )
-
             with yt_dlp.YoutubeDL(
                 options
             ) as ydl:
 
                 info = ydl.extract_info(
                     source,
-                    download=False
+                    download=False,
                 )
 
             return self._info_to_tracks(
                 info,
-                limit
+                limit,
             )
 
-        except Exception as e:
+        except Exception as exc:
 
             logger.warning(
-                "Generic search failed: %s",
-                e
+                "GENERIC SEARCH FAILED | %s",
+                exc,
             )
 
             return []
@@ -217,19 +283,11 @@ class MusicDownloader:
     def _youtube_search(
         self,
         yt_dlp,
-        source,
-        limit
-    ):
+        source: str,
+        limit: int,
+    ) -> list[TrackInfo]:
 
-        clients = [
-            ["android_vr"],
-            ["web_safari"],
-            ["web_music"],
-            ["tv_simply"],
-            ["web"],
-        ]
-
-        for client in clients:
+        for client in self.YOUTUBE_CLIENTS:
 
             options = {
                 "quiet": True,
@@ -240,27 +298,16 @@ class MusicDownloader:
 
                 "extractor_args": {
                     "youtube": {
-                        "player_client": client
+                        "player_client": client,
                     }
                 },
 
                 "http_headers": {
-                    "User-Agent": (
-                        "Mozilla/5.0 "
-                        "(X11; Linux x86_64) "
-                        "AppleWebKit/537.36 "
-                        "(KHTML, like Gecko) "
-                        "Chrome/131.0 Safari/537.36"
-                    )
+                    "User-Agent": self.USER_AGENT,
                 },
             }
 
             try:
-
-                logger.info(
-                    "YouTube search client=%s",
-                    client
-                )
 
                 with yt_dlp.YoutubeDL(
                     options
@@ -268,54 +315,46 @@ class MusicDownloader:
 
                     info = ydl.extract_info(
                         source,
-                        download=False
+                        download=False,
                     )
 
                 results = self._info_to_tracks(
                     info,
-                    limit
+                    limit,
                 )
 
                 if results:
                     return results
 
-            except Exception as e:
+            except Exception as exc:
 
                 logger.warning(
-                    "YouTube client %s failed: %s",
+                    "YOUTUBE SEARCH FAILED | client=%s | %s",
                     client,
-                    e
+                    exc,
                 )
 
         return []
 
     # ========================================================
-    # DIRECT URL EXTRACT
+    # DIRECT URL
     # ========================================================
 
     def _extract_url(
         self,
         yt_dlp,
-        source,
-        limit
-    ):
+        source: str,
+        limit: int,
+    ) -> list[TrackInfo]:
 
-        # اگر URL یوتیوب است، کلاینت‌های مختلف
-        # امتحان شوند.
-        if (
+        is_youtube = (
             "youtube.com" in source
             or "youtu.be" in source
-        ):
+        )
 
-            clients = [
-                ["android_vr"],
-                ["web_safari"],
-                ["web_music"],
-                ["tv_simply"],
-                ["web"],
-            ]
+        if is_youtube:
 
-            for client in clients:
+            for client in self.YOUTUBE_CLIENTS:
 
                 options = {
                     "quiet": True,
@@ -326,18 +365,12 @@ class MusicDownloader:
 
                     "extractor_args": {
                         "youtube": {
-                            "player_client": client
+                            "player_client": client,
                         }
                     },
 
                     "http_headers": {
-                        "User-Agent": (
-                            "Mozilla/5.0 "
-                            "(X11; Linux x86_64) "
-                            "AppleWebKit/537.36 "
-                            "(KHTML, like Gecko) "
-                            "Chrome/131.0 Safari/537.36"
-                        )
+                        "User-Agent": self.USER_AGENT,
                     },
                 }
 
@@ -349,30 +382,26 @@ class MusicDownloader:
 
                         info = ydl.extract_info(
                             source,
-                            download=False
+                            download=False,
                         )
 
                     results = self._info_to_tracks(
                         info,
-                        limit
+                        limit,
                     )
 
                     if results:
                         return results
 
-                except Exception as e:
+                except Exception as exc:
 
                     logger.warning(
-                        "Direct YouTube client %s failed: %s",
+                        "DIRECT YOUTUBE FAILED | client=%s | %s",
                         client,
-                        e
+                        exc,
                     )
 
             return []
-
-        # ----------------------------------------------------
-        # Other supported direct URLs
-        # ----------------------------------------------------
 
         options = {
             "quiet": True,
@@ -390,19 +419,19 @@ class MusicDownloader:
 
                 info = ydl.extract_info(
                     source,
-                    download=False
+                    download=False,
                 )
 
             return self._info_to_tracks(
                 info,
-                limit
+                limit,
             )
 
-        except Exception as e:
+        except Exception as exc:
 
             logger.warning(
-                "Direct URL extraction failed: %s",
-                e
+                "DIRECT URL FAILED | %s",
+                exc,
             )
 
             return []
@@ -413,33 +442,25 @@ class MusicDownloader:
 
     def _info_to_tracks(
         self,
-        info,
-        limit
-    ):
+        info: Optional[dict],
+        limit: int,
+    ) -> list[TrackInfo]:
 
         if not info:
             return []
 
-        entries = info.get(
-            "entries"
-        )
+        entries = info.get("entries")
 
-        if entries is not None:
-
+        if entries is None:
+            entries = [info]
+        else:
             entries = [
                 item
                 for item in entries
                 if item
             ]
 
-        else:
-
-            entries = [info]
-
-        if not entries:
-            return []
-
-        results = []
+        results: list[TrackInfo] = []
 
         for item in entries[:limit]:
 
@@ -448,17 +469,6 @@ class MusicDownloader:
                 or item.get("creator")
                 or item.get("uploader")
                 or item.get("channel")
-                or ""
-            )
-
-            webpage_url = (
-                item.get("webpage_url")
-                or item.get("original_url")
-                or ""
-            )
-
-            direct_url = (
-                item.get("url")
                 or ""
             )
 
@@ -477,9 +487,16 @@ class MusicDownloader:
                         or 0
                     ),
 
-                    url=direct_url,
+                    url=(
+                        item.get("url")
+                        or ""
+                    ),
 
-                    webpage_url=webpage_url,
+                    webpage_url=(
+                        item.get("webpage_url")
+                        or item.get("original_url")
+                        or ""
+                    ),
 
                     thumbnail=(
                         item.get("thumbnail")
@@ -490,7 +507,7 @@ class MusicDownloader:
                         item.get("uploader")
                         or item.get("channel")
                         or ""
-                    )
+                    ),
                 )
             )
 
@@ -502,8 +519,8 @@ class MusicDownloader:
 
     async def download(
         self,
-        track: TrackInfo
-    ):
+        track: TrackInfo,
+    ) -> Optional[TrackInfo]:
 
         source = (
             track.webpage_url
@@ -511,24 +528,22 @@ class MusicDownloader:
         )
 
         if not source:
-
             logger.error(
-                "DOWNLOAD FAILED: no source URL"
+                "DOWNLOAD FAILED | no source"
             )
-
             return None
 
         return await asyncio.to_thread(
             self._download_sync,
             source,
-            track
+            track,
         )
 
     def _download_sync(
         self,
-        source,
-        track
-    ):
+        source: str,
+        track: TrackInfo,
+    ) -> Optional[TrackInfo]:
 
         import yt_dlp
 
@@ -537,19 +552,11 @@ class MusicDownloader:
             or "youtu.be" in source
         )
 
-        if is_youtube:
-
-            clients = [
-                ["android_vr"],
-                ["web_safari"],
-                ["web_music"],
-                ["tv_simply"],
-                ["web"],
-            ]
-
-        else:
-
-            clients = [None]
+        clients = (
+            self.YOUTUBE_CLIENTS
+            if is_youtube
+            else (None,)
+        )
 
         for client in clients:
 
@@ -559,11 +566,11 @@ class MusicDownloader:
             )
 
             options = {
-
-                "format":
+                "format": (
                     "bestaudio[ext=m4a]/"
                     "bestaudio[ext=webm]/"
-                    "bestaudio/best",
+                    "bestaudio/best"
+                ),
 
                 "outtmpl": output,
 
@@ -575,37 +582,36 @@ class MusicDownloader:
 
                 "overwrites": False,
 
+                "retries": 2,
+
+                "fragment_retries": 2,
+
+                "continuedl": True,
+
             }
 
-            # فقط برای YouTube
             if client:
 
                 options[
                     "extractor_args"
                 ] = {
                     "youtube": {
-                        "player_client": client
+                        "player_client": client,
                     }
                 }
 
                 options[
                     "http_headers"
                 ] = {
-                    "User-Agent": (
-                        "Mozilla/5.0 "
-                        "(X11; Linux x86_64) "
-                        "AppleWebKit/537.36 "
-                        "(KHTML, like Gecko) "
-                        "Chrome/131.0 Safari/537.36"
-                    )
+                    "User-Agent": self.USER_AGENT,
                 }
 
             try:
 
                 logger.info(
-                    "DOWNLOAD source=%s client=%s",
+                    "DOWNLOAD | source=%s | client=%s",
                     source,
-                    client
+                    client,
                 )
 
                 with yt_dlp.YoutubeDL(
@@ -614,7 +620,7 @@ class MusicDownloader:
 
                     info = ydl.extract_info(
                         source,
-                        download=True
+                        download=True,
                     )
 
                     if not info:
@@ -627,19 +633,15 @@ class MusicDownloader:
                     if entries:
 
                         entries = [
-                            x
-                            for x in entries
-                            if x
+                            item
+                            for item in entries
+                            if item
                         ]
 
                         if not entries:
                             continue
 
                         info = entries[0]
-
-                    # ----------------------------------------
-                    # requested_downloads
-                    # ----------------------------------------
 
                     filepath = None
 
@@ -657,13 +659,8 @@ class MusicDownloader:
                         )
 
                         if path:
-
                             filepath = path
                             break
-
-                    # ----------------------------------------
-                    # prepare_filename
-                    # ----------------------------------------
 
                     if not filepath:
 
@@ -676,86 +673,95 @@ class MusicDownloader:
                             )
 
                         except Exception:
-
                             filepath = None
-
-                    # ----------------------------------------
-                    # FILE EXISTS
-                    # ----------------------------------------
 
                     if filepath:
 
-                        path = Path(
-                            filepath
+                        path = Path(filepath)
+
+                        if self._valid_file(path):
+
+                            self._update_track(
+                                track,
+                                info,
+                                path,
+                            )
+
+                            return track
+
+                    # ------------------------------------------------
+                    # Fallback: newest valid downloaded file
+                    # ------------------------------------------------
+
+                    newest = self._newest_file()
+
+                    if newest:
+
+                        self._update_track(
+                            track,
+                            info,
+                            newest,
                         )
 
-                        if (
-                            path.exists()
-                            and path.is_file()
-                            and path.stat().st_size > 1024
-                        ):
+                        return track
 
-                            self._update_track(
-                                track,
-                                info,
-                                path
-                            )
-
-                            logger.info(
-                                "DOWNLOAD OK: %s",
-                                path
-                            )
-
-                            return track
-
-                    # ----------------------------------------
-                    # FALLBACK
-                    # ----------------------------------------
-
-                    files = sorted(
-                        self.download_dir.glob("*"),
-                        key=lambda p: (
-                            p.stat().st_mtime
-                        ),
-                        reverse=True
-                    )
-
-                    for path in files:
-
-                        if (
-                            path.is_file()
-                            and path.stat().st_size > 1024
-                        ):
-
-                            self._update_track(
-                                track,
-                                info,
-                                path
-                            )
-
-                            logger.info(
-                                "DOWNLOAD FALLBACK OK: %s",
-                                path
-                            )
-
-                            return track
-
-            except Exception as e:
+            except Exception as exc:
 
                 logger.warning(
-                    "DOWNLOAD FAILED "
-                    "source=%s client=%s error=%s",
-                    source,
+                    "DOWNLOAD FAILED | client=%s | %s",
                     client,
-                    e
+                    exc,
                 )
 
         logger.error(
-            "ALL DOWNLOAD METHODS FAILED: %s",
-            source
+            "ALL DOWNLOAD METHODS FAILED | %s",
+            source,
         )
 
         return None
+
+    # ========================================================
+    # FILE HELPERS
+    # ========================================================
+
+    @staticmethod
+    def _valid_file(
+        path: Path,
+    ) -> bool:
+
+        try:
+
+            return (
+                path.exists()
+                and path.is_file()
+                and path.stat().st_size > 1024
+            )
+
+        except OSError:
+            return False
+
+    def _newest_file(self) -> Optional[Path]:
+
+        files = []
+
+        try:
+
+            for path in self.download_dir.iterdir():
+
+                if self._valid_file(path):
+                    files.append(path)
+
+        except OSError:
+
+            return None
+
+        if not files:
+            return None
+
+        return max(
+            files,
+            key=lambda p: p.stat().st_mtime,
+        )
 
     # ========================================================
     # UPDATE TRACK
@@ -763,9 +769,9 @@ class MusicDownloader:
 
     def _update_track(
         self,
-        track,
-        info,
-        path
+        track: TrackInfo,
+        info: dict,
+        path: Path,
     ):
 
         artist = (
@@ -780,6 +786,7 @@ class MusicDownloader:
         track.title = (
             info.get("title")
             or track.title
+            or "موزیک"
         )
 
         track.performer = artist
@@ -791,9 +798,29 @@ class MusicDownloader:
             or 0
         )
 
+        track.url = (
+            info.get("url")
+            or track.url
+            or ""
+        )
+
+        track.webpage_url = (
+            info.get("webpage_url")
+            or info.get("original_url")
+            or track.webpage_url
+            or ""
+        )
+
         track.thumbnail = (
             info.get("thumbnail")
             or track.thumbnail
+            or ""
+        )
+
+        track.uploader = (
+            info.get("uploader")
+            or info.get("channel")
+            or track.uploader
             or ""
         )
 
@@ -807,17 +834,17 @@ class MusicDownloader:
 
     async def prepare(
         self,
-        track
-    ):
+        track: TrackInfo,
+    ) -> Optional[TrackInfo]:
 
-        if (
-            track.filepath
-            and Path(
+        if track.filepath:
+
+            path = Path(
                 track.filepath
-            ).exists()
-        ):
+            )
 
-            return track
+            if self._valid_file(path):
+                return track
 
         return await self.download(
             track
@@ -834,27 +861,50 @@ class MusicPlayer:
         self,
         app: Any = None,
         call: Any = None,
-        download_dir="downloads"
+        download_dir: str = "downloads",
     ):
 
         self.app = app
-
         self.call = call
 
         self.downloader = MusicDownloader(
             download_dir
         )
 
-        self.current = {}
-        self.queues = {}
-        self.history = {}
+        # chat_id -> current TrackInfo
+        self.current: dict[int, TrackInfo] = {}
 
-        self.paused = set()
+        # chat_id -> queued TrackInfo
+        self.queues: dict[int, list[TrackInfo]] = {}
 
-        self.started_at = {}
-        self.offset = {}
+        # chat_id -> previous TrackInfo
+        self.history: dict[int, list[TrackInfo]] = {}
 
-        self.volume = {}
+        self.paused: set[int] = set()
+
+        self.started_at: dict[int, float] = {}
+
+        self.offset: dict[int, int] = {}
+
+        self.volume: dict[int, int] = {}
+
+        # Prevent two play operations
+        # from fighting each other.
+        self.locks: dict[int, asyncio.Lock] = {}
+
+    # ========================================================
+    # LOCK
+    # ========================================================
+
+    def _lock(
+        self,
+        chat_id: int,
+    ) -> asyncio.Lock:
+
+        return self.locks.setdefault(
+            chat_id,
+            asyncio.Lock(),
+        )
 
     # ========================================================
     # QUEUE
@@ -862,12 +912,12 @@ class MusicPlayer:
 
     def _queue(
         self,
-        chat_id
-    ):
+        chat_id: int,
+    ) -> list[TrackInfo]:
 
         return self.queues.setdefault(
             chat_id,
-            []
+            [],
         )
 
     # ========================================================
@@ -876,209 +926,209 @@ class MusicPlayer:
 
     async def play_track(
         self,
-        chat_id,
-        track
-    ):
+        chat_id: int,
+        track: TrackInfo,
+        *,
+        save_history: bool = True,
+    ) -> bool:
 
         if self.call is None:
 
             logger.error(
-                "PLAY FAILED: PyTgCalls is None"
+                "PLAY FAILED | PyTgCalls unavailable"
             )
 
             return False
 
-        try:
+        if not track:
+            return False
 
-            # -----------------------------------------------
-            # Prepare / download
-            # -----------------------------------------------
+        async with self._lock(chat_id):
 
-            prepared = (
-                await self.downloader.prepare(
-                    track
-                )
-            )
+            try:
 
-            if not prepared:
+                # ------------------------------------------------
+                # DOWNLOAD / PREPARE
+                # ------------------------------------------------
 
-                logger.error(
-                    "PLAY FAILED: prepare returned None"
-                )
-
-                return False
-
-            if not prepared.filepath:
-
-                logger.error(
-                    "PLAY FAILED: filepath is empty"
+                prepared = (
+                    await self.downloader.prepare(
+                        track
+                    )
                 )
 
-                return False
+                if not prepared:
+                    logger.error(
+                        "PLAY FAILED | prepare returned None"
+                    )
+                    return False
 
-            filepath = Path(
-                prepared.filepath
-            ).resolve()
+                if not prepared.filepath:
+                    logger.error(
+                        "PLAY FAILED | empty filepath"
+                    )
+                    return False
 
-            if not filepath.exists():
+                filepath = Path(
+                    prepared.filepath
+                ).resolve()
 
-                logger.error(
-                    "PLAY FAILED: file does not exist: %s",
+                if not self.downloader._valid_file(
+                    filepath
+                ):
+
+                    logger.error(
+                        "PLAY FAILED | invalid file: %s",
+                        filepath,
+                    )
+
+                    return False
+
+                prepared.filepath = str(
                     filepath
                 )
 
-                return False
+                # ------------------------------------------------
+                # HISTORY
+                # ------------------------------------------------
 
-            if filepath.stat().st_size < 1024:
-
-                logger.error(
-                    "PLAY FAILED: file is too small: %s",
-                    filepath
+                old = self.current.get(
+                    chat_id
                 )
 
-                return False
-
-            prepared.filepath = str(
-                filepath
-            )
-
-            logger.info(
-                "🎵 Preparing MediaStream: %s",
-                filepath
-            )
-
-            # -----------------------------------------------
-            # Audio-only MediaStream
-            # -----------------------------------------------
-            #
-            # video_flags=IGNORE means Telegram voice chat
-            # receives audio only.
-            #
-            # This is the official PyTgCalls pattern.
-            # -----------------------------------------------
-
-            stream = MediaStream(
-                str(filepath),
-                video_flags=(
-                    MediaStream.Flags.IGNORE
-                )
-            )
-
-            logger.info(
-                "▶️ Calling PyTgCalls.play chat=%s file=%s",
-                chat_id,
-                filepath
-            )
-
-            # -----------------------------------------------
-            # ACTUAL PLAY
-            # -----------------------------------------------
-
-            await self.call.play(
-                chat_id,
-                stream
-            )
-
-            # -----------------------------------------------
-            # HISTORY
-            # -----------------------------------------------
-
-            old = self.current.get(
-                chat_id
-            )
-
-            if old:
-
-                self.history.setdefault(
-                    chat_id,
-                    []
-                ).append(
+                if (
                     old
+                    and save_history
+                    and old is not prepared
+                ):
+
+                    self.history.setdefault(
+                        chat_id,
+                        []
+                    ).append(old)
+
+                    # Keep memory bounded.
+                    self.history[
+                        chat_id
+                    ] = self.history[
+                        chat_id
+                    ][-20:]
+
+                # ------------------------------------------------
+                # MEDIA STREAM
+                # ------------------------------------------------
+
+                stream = MediaStream(
+                    str(filepath),
+                    video_flags=(
+                        MediaStream.Flags.IGNORE
+                    ),
                 )
 
-            # -----------------------------------------------
-            # CURRENT
-            # -----------------------------------------------
+                logger.info(
+                    "▶️ PLAY | chat=%s | title=%s | file=%s",
+                    chat_id,
+                    prepared.title,
+                    filepath,
+                )
 
-            self.current[
-                chat_id
-            ] = prepared
+                # ------------------------------------------------
+                # REAL TELEGRAM PLAY
+                # ------------------------------------------------
 
-            self.started_at[
-                chat_id
-            ] = time.monotonic()
+                await self.call.play(
+                    chat_id,
+                    stream,
+                )
 
-            self.offset[
-                chat_id
-            ] = 0
+                # ------------------------------------------------
+                # CURRENT STATE
+                # ------------------------------------------------
 
-            self.paused.discard(
-                chat_id
-            )
+                self.current[
+                    chat_id
+                ] = prepared
 
-            logger.info(
-                "🟢 NOW PLAYING: %s",
-                prepared.title
-            )
+                self.started_at[
+                    chat_id
+                ] = time.monotonic()
 
-            return True
+                self.offset[
+                    chat_id
+                ] = 0
 
-        except Exception as e:
+                self.paused.discard(
+                    chat_id
+                )
 
-            logger.exception(
-                "❌ REAL PLAY ERROR chat=%s: %s",
-                chat_id,
-                e
-            )
+                logger.info(
+                    "🟢 NOW PLAYING | %s | %s",
+                    prepared.title,
+                    prepared.display_artist,
+                )
 
-            return False
+                return True
+
+            except Exception:
+
+                logger.exception(
+                    "❌ PLAY ERROR | chat=%s | title=%s",
+                    chat_id,
+                    getattr(
+                        track,
+                        "title",
+                        "unknown",
+                    ),
+                )
+
+                return False
 
     # ========================================================
-    # PLAY
+    # PLAY / QUEUE
     # ========================================================
 
     async def play(
         self,
-        chat_id,
-        track
-    ):
+        chat_id: int,
+        track: TrackInfo,
+    ) -> bool:
 
         if chat_id in self.current:
 
             self._queue(
                 chat_id
-            ).append(
-                track
-            )
+            ).append(track)
 
             logger.info(
-                "➕ Added to queue: %s",
-                track.title
+                "➕ QUEUED | chat=%s | %s",
+                chat_id,
+                track.title,
             )
 
             return True
 
         return await self.play_track(
             chat_id,
-            track
+            track,
         )
-
-    # ========================================================
-    # ADD QUEUE
-    # ========================================================
 
     async def add_to_queue(
         self,
-        chat_id,
-        track
-    ):
+        chat_id: int,
+        track: TrackInfo,
+    ) -> int:
 
         queue = self._queue(
             chat_id
         )
 
-        queue.append(
-            track
+        queue.append(track)
+
+        logger.info(
+            "➕ QUEUE ADD | chat=%s | position=%s | %s",
+            chat_id,
+            len(queue),
+            track.title,
         )
 
         return len(queue)
@@ -1089,14 +1139,13 @@ class MusicPlayer:
 
     async def pause(
         self,
-        chat_id
-    ):
+        chat_id: int,
+    ) -> bool:
 
         if (
             self.call is None
             or chat_id not in self.current
         ):
-
             return False
 
         try:
@@ -1115,13 +1164,18 @@ class MusicPlayer:
                 chat_id
             )
 
+            logger.info(
+                "⏸️ PAUSED | chat=%s",
+                chat_id,
+            )
+
             return True
 
-        except Exception as e:
+        except Exception:
 
             logger.exception(
-                "Pause failed: %s",
-                e
+                "PAUSE FAILED | chat=%s",
+                chat_id,
             )
 
             return False
@@ -1132,14 +1186,13 @@ class MusicPlayer:
 
     async def resume(
         self,
-        chat_id
-    ):
+        chat_id: int,
+    ) -> bool:
 
         if (
             self.call is None
             or chat_id not in self.current
         ):
-
             return False
 
         try:
@@ -1156,13 +1209,18 @@ class MusicPlayer:
                 chat_id
             ] = time.monotonic()
 
+            logger.info(
+                "▶️ RESUMED | chat=%s",
+                chat_id,
+            )
+
             return True
 
-        except Exception as e:
+        except Exception:
 
             logger.exception(
-                "Resume failed: %s",
-                e
+                "RESUME FAILED | chat=%s",
+                chat_id,
             )
 
             return False
@@ -1173,18 +1231,21 @@ class MusicPlayer:
 
     async def stop(
         self,
-        chat_id
-    ):
+        chat_id: int,
+    ) -> bool:
 
         if self.call is None:
-
             return False
+
+        success = False
 
         try:
 
             await self.call.leave_call(
                 chat_id
             )
+
+            success = True
 
         except Exception:
 
@@ -1194,37 +1255,45 @@ class MusicPlayer:
                     chat_id
                 )
 
+                success = True
+
             except Exception:
 
                 logger.exception(
-                    "Could not leave call"
+                    "STOP / LEAVE CALL FAILED | chat=%s",
+                    chat_id,
                 )
 
         self.current.pop(
             chat_id,
-            None
+            None,
         )
 
         self.queues.pop(
             chat_id,
-            None
+            None,
         )
 
         self.paused.discard(
-            chat_id
+            chat_id,
         )
 
         self.started_at.pop(
             chat_id,
-            None
+            None,
         )
 
         self.offset.pop(
             chat_id,
-            None
+            None,
         )
 
-        return True
+        logger.info(
+            "⏹️ STOPPED | chat=%s",
+            chat_id,
+        )
+
+        return success
 
     # ========================================================
     # NEXT
@@ -1232,8 +1301,8 @@ class MusicPlayer:
 
     async def next(
         self,
-        chat_id
-    ):
+        chat_id: int,
+    ) -> Optional[TrackInfo]:
 
         queue = self._queue(
             chat_id
@@ -1253,7 +1322,8 @@ class MusicPlayer:
 
         if await self.play_track(
             chat_id,
-            track
+            track,
+            save_history=True,
         ):
 
             return self.current.get(
@@ -1268,23 +1338,23 @@ class MusicPlayer:
 
     async def previous(
         self,
-        chat_id
-    ):
+        chat_id: int,
+    ) -> Optional[TrackInfo]:
 
         history = self.history.setdefault(
             chat_id,
-            []
+            [],
         )
 
         if not history:
-
             return None
 
         track = history.pop()
 
         if await self.play_track(
             chat_id,
-            track
+            track,
+            save_history=False,
         ):
 
             return self.current.get(
@@ -1299,11 +1369,10 @@ class MusicPlayer:
 
     async def get_position(
         self,
-        chat_id
-    ):
+        chat_id: int,
+    ) -> int:
 
         if chat_id not in self.current:
-
             return 0
 
         if chat_id in self.paused:
@@ -1311,7 +1380,7 @@ class MusicPlayer:
             return int(
                 self.offset.get(
                     chat_id,
-                    0
+                    0,
                 )
             )
 
@@ -1320,19 +1389,34 @@ class MusicPlayer:
         )
 
         if started is None:
-
             return 0
+
+        position = (
+            self.offset.get(
+                chat_id,
+                0,
+            )
+            + (
+                time.monotonic()
+                - started
+            )
+        )
+
+        duration = (
+            self.current[
+                chat_id
+            ].duration
+        )
+
+        if duration > 0:
+            position = min(
+                position,
+                duration,
+            )
 
         return max(
             0,
-            int(
-                self.offset.get(
-                    chat_id,
-                    0
-                )
-                + time.monotonic()
-                - started
-            )
+            int(position),
         )
 
     # ========================================================
@@ -1341,12 +1425,11 @@ class MusicPlayer:
 
     async def set_volume(
         self,
-        chat_id,
-        volume
-    ):
+        chat_id: int,
+        volume: int,
+    ) -> bool:
 
         if self.call is None:
-
             return False
 
         try:
@@ -1355,13 +1438,13 @@ class MusicPlayer:
                 1,
                 min(
                     200,
-                    int(volume)
-                )
+                    int(volume),
+                ),
             )
 
             await self.call.change_volume(
                 chat_id,
-                volume
+                volume,
             )
 
             self.volume[
@@ -1370,11 +1453,11 @@ class MusicPlayer:
 
             return True
 
-        except Exception as e:
+        except Exception:
 
             logger.exception(
-                "Volume failed: %s",
-                e
+                "VOLUME FAILED | chat=%s",
+                chat_id,
             )
 
             return False
@@ -1385,8 +1468,8 @@ class MusicPlayer:
 
     def get_current(
         self,
-        chat_id
-    ):
+        chat_id: int,
+    ) -> Optional[TrackInfo]:
 
         return self.current.get(
             chat_id
@@ -1398,11 +1481,95 @@ class MusicPlayer:
 
     def get_queue(
         self,
-        chat_id
-    ):
+        chat_id: int,
+    ) -> list[TrackInfo]:
 
         return list(
             self._queue(
                 chat_id
             )
+        )
+
+    # ========================================================
+    # STATE
+    # ========================================================
+
+    def is_playing(
+        self,
+        chat_id: int,
+    ) -> bool:
+
+        return (
+            chat_id in self.current
+            and chat_id not in self.paused
+        )
+
+    def is_paused(
+        self,
+        chat_id: int,
+    ) -> bool:
+
+        return (
+            chat_id in self.current
+            and chat_id in self.paused
+        )
+
+    def queue_count(
+        self,
+        chat_id: int,
+    ) -> int:
+
+        return len(
+            self.queues.get(
+                chat_id,
+                [],
+            )
+        )
+
+    # ========================================================
+    # CLEANUP
+    # ========================================================
+
+    async def cleanup_chat(
+        self,
+        chat_id: int,
+    ):
+
+        self.current.pop(
+            chat_id,
+            None,
+        )
+
+        self.queues.pop(
+            chat_id,
+            None,
+        )
+
+        self.history.pop(
+            chat_id,
+            None,
+        )
+
+        self.paused.discard(
+            chat_id
+        )
+
+        self.started_at.pop(
+            chat_id,
+            None,
+        )
+
+        self.offset.pop(
+            chat_id,
+            None,
+        )
+
+        self.volume.pop(
+            chat_id,
+            None,
+        )
+
+        self.locks.pop(
+            chat_id,
+            None,
         )
