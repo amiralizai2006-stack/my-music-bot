@@ -16,11 +16,11 @@ logger = logging.getLogger(__name__)
 @dataclass
 class TrackInfo:
     title: str
-    duration: int
-    url: str
-    webpage_url: str
-    thumbnail: str
-    uploader: str
+    duration: int = 0
+    url: str = ""
+    webpage_url: str = ""
+    thumbnail: str = ""
+    uploader: str = "Unknown"
     filepath: Optional[str] = None
     performer: str = ""
 
@@ -217,14 +217,25 @@ class MusicDownloader:
                 "outtmpl": str(output),
 
                 "postprocessors": [],
-
             }
 
-            with yt_dlp.YoutubeDL(opts) as ydl:
+            try:
 
-                ydl.download(
-                    [source]
+                with yt_dlp.YoutubeDL(opts) as ydl:
+
+                    ydl.download(
+                        [source]
+                    )
+
+            except Exception as e:
+
+                logger.exception(
+                    "YTDLP DOWNLOAD ERROR: %s: %s",
+                    type(e).__name__,
+                    str(e),
                 )
+
+                return None
 
             files = list(
                 self.downloads_dir.glob(
@@ -291,7 +302,7 @@ class MusicDownloader:
             return None
 
 
-# یک Downloader مشترک
+# Downloader مشترک
 downloader = MusicDownloader()
 
 
@@ -304,8 +315,7 @@ class MusicPlayer:
 
         self.client = pytgcalls_client
 
-        # مهم:
-        # handlers.py از player.downloader استفاده می‌کند.
+        # مهم: handlers.py از این استفاده می‌کند
         self.downloader = downloader
 
         self.current_track = None
