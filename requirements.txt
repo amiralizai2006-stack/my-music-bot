@@ -4,3 +4,5 @@
 
 # Base requirements (all platforms)
 -r requirements-base.txt
+py-tgcalls
+tgcrypto
