@@ -26,18 +26,44 @@ IMPORT_ERROR = None
 try:
     import pyrogram.errors
 
-    # PyTgCalls expects GroupcallForbidden
+    # -------------------------------------------------
+    # GroupcallForbidden compatibility
+    # -------------------------------------------------
+    #
+    # Some PyTgCalls versions import:
+    #     GroupcallForbidden
+    #
+    # Older Pyrogram versions may not expose that exact
+    # name. Try the alternative name first, then fall
+    # back to BadRequest so PyTgCalls can be imported.
+    # -------------------------------------------------
+
     if not hasattr(pyrogram.errors, "GroupcallForbidden"):
+
         if hasattr(pyrogram.errors, "GroupCallForbidden"):
             pyrogram.errors.GroupcallForbidden = (
                 pyrogram.errors.GroupCallForbidden
             )
 
-    # PyTgCalls expects GroupcallInvalid
+        else:
+            pyrogram.errors.GroupcallForbidden = (
+                pyrogram.errors.BadRequest
+            )
+
+    # -------------------------------------------------
+    # GroupcallInvalid compatibility
+    # -------------------------------------------------
+
     if not hasattr(pyrogram.errors, "GroupcallInvalid"):
+
         if hasattr(pyrogram.errors, "GroupCallInvalid"):
             pyrogram.errors.GroupcallInvalid = (
                 pyrogram.errors.GroupCallInvalid
+            )
+
+        else:
+            pyrogram.errors.GroupcallInvalid = (
+                pyrogram.errors.BadRequest
             )
 
     logger.info(
@@ -45,7 +71,9 @@ try:
     )
 
 except Exception as e:
+
     IMPORT_ERROR = e
+
     logger.exception(
         "❌ Compatibility setup failed: %s",
         e,
@@ -59,6 +87,7 @@ except Exception as e:
 if not IS_ANDROID:
 
     try:
+
         from pytgcalls import PyTgCalls
         from pytgcalls.types import MediaStream
 
@@ -79,6 +108,7 @@ if not IS_ANDROID:
         )
 
     except Exception as e:
+
         IMPORT_ERROR = e
         VOICE_CHAT_AVAILABLE = False
 
@@ -103,9 +133,13 @@ psutil = None
 HAS_PSUTIL = False
 
 try:
+
     import psutil
+
     HAS_PSUTIL = True
+
 except Exception:
+
     pass
 
 
@@ -116,6 +150,7 @@ except Exception:
 def check_voice_chat_support():
 
     if IS_ANDROID:
+
         return (
             False,
             "Voice chat is not supported on Android/Termux."
@@ -124,6 +159,7 @@ def check_voice_chat_support():
     if not VOICE_CHAT_AVAILABLE:
 
         if IMPORT_ERROR:
+
             return (
                 False,
                 f"PyTgCalls import failed: {IMPORT_ERROR}"
@@ -154,11 +190,13 @@ def get_platform_info():
     }
 
     if IMPORT_ERROR:
+
         info["pytgcalls_import_error"] = str(
             IMPORT_ERROR
         )
 
     try:
+
         import pytgcalls
 
         info["pytgcalls_version"] = getattr(
@@ -168,6 +206,7 @@ def get_platform_info():
         )
 
     except Exception:
+
         info["pytgcalls_version"] = "unknown"
 
     return info
