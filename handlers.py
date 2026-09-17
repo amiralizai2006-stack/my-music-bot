@@ -2,25 +2,18 @@
 # SILENT MUSIC PLAYER - handlers.py
 # Persian Telegram Music Player
 #
-# امکانات:
-# - پخش اسم آهنگ
-# - پخش فایل با ریپلای
-# - پخش لینک
-# - کارت Now Playing مدرن
-# - عکس پروفایل خود ربات
-# - دکمه‌های متعدد کنترل موزیک
-# - صف پخش
-# - قبلی / بعدی
-# - مکث / ادامه
-# - پایان
-# - کنترل صدا
-# - عضویت اجباری
-# - بررسی فعال بودن چت
+# Owner:
+# - Always has full access
+# - Never needs activation
+# - Can activate/charge chats for 30/60/90 days
+#
+# Users:
+# - Chat must be activated
+# - Forced membership applies after activation
 # ============================================================
 
 import logging
 import re
-import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -36,10 +29,17 @@ from player import TrackInfo
 from database import (
     is_chat_active,
     get_forced_channel,
+    activate_chat,
 )
 
+try:
+    from config import is_owner
+except Exception:
+    def is_owner(user_id):
+        return False
 
-logger = logging.getLogger(__name__)
+
+logger = logging.getLogger("SILENT.handlers")
 
 
 # ============================================================
@@ -92,6 +92,35 @@ def _register_activity(message: Message):
 # Basic helpers
 # ============================================================
 
+def _is_owner_user(user_id):
+    try:
+        return bool(user_id and is_owner(int(user_id)))
+    except Exception:
+        return False
+
+
+def _message_is_owner(message):
+    try:
+        return bool(
+            message
+            and message.from_user
+            and _is_owner_user(message.from_user.id)
+        )
+    except Exception:
+        return False
+
+
+def _callback_is_owner(callback):
+    try:
+        return bool(
+            callback
+            and callback.from_user
+            and _is_owner_user(callback.from_user.id)
+        )
+    except Exception:
+        return False
+
+
 def _track_title(track):
     return (
         getattr(track, "title", None)
@@ -109,10 +138,7 @@ def _track_artist(track):
 
 
 def _track_thumbnail(track):
-    return (
-        getattr(track, "thumbnail", None)
-        or None
-    )
+    return getattr(track, "thumbnail", None) or None
 
 
 def _format_duration(seconds):
@@ -175,14 +201,10 @@ def _user_display_name(user):
 # ============================================================
 
 def _get_current_track(chat_id):
-    """
-    با ساختارهای مختلف player.py سازگار است.
-    """
 
     if player is None:
         return None
 
-    # ساختار رایج
     try:
         current = getattr(
             player,
@@ -196,7 +218,6 @@ def _get_current_track(chat_id):
     except Exception:
         pass
 
-    # property
     try:
         current_track = getattr(
             player,
@@ -210,7 +231,6 @@ def _get_current_track(chat_id):
     except Exception:
         pass
 
-    # متد
     try:
         method = getattr(
             player,
@@ -232,9 +252,6 @@ def _get_current_track(chat_id):
 # ============================================================
 
 async def _get_bot_profile_photo(client):
-    """
-    عکس پروفایل فعلی خود ربات را یک‌بار دریافت می‌کند.
-    """
 
     global _bot_profile_photo
 
@@ -245,9 +262,7 @@ async def _get_bot_profile_photo(client):
         me = await client.get_me()
 
         if not me or not me.photo:
-            logger.warning(
-                "Bot has no profile photo."
-            )
+            logger.warning("Bot has no profile photo.")
             return None
 
         profile_path = await client.download_media(
@@ -271,7 +286,7 @@ async def _get_bot_profile_photo(client):
 
 
 # ============================================================
-# Subscription / activation
+# Subscription / Activation
 # ============================================================
 
 async def _check_subscription(message: Message) -> bool:
@@ -284,9 +299,19 @@ async def _check_subscription(message: Message) -> bool:
 
     chat_id = message.chat.id
 
-    # --------------------------------------------------------
-    # Chat activation
-    # --------------------------------------------------------
+    # ========================================================
+    # OWNER BYPASS
+    # ========================================================
+    # مالک ربات همیشه آزاد است.
+    # هیچ‌وقت نیاز به شارژ یا عضویت اجباری ندارد.
+    # ========================================================
+
+    if _message_is_owner(message):
+        return True
+
+    # ========================================================
+    # CHAT ACTIVATION
+    # ========================================================
 
     if not is_chat_active(chat_id):
 
@@ -309,19 +334,19 @@ async def _check_subscription(message: Message) -> bool:
 
         await message.reply_text(
             "╭━━━━━━━━━━━━━━━━━━╮\n"
-            "       🔒 دسترسی غیرفعال\n"
+            "       🔒 ربات قفل است\n"
             "╰━━━━━━━━━━━━━━━━━━╯\n\n"
-            "این گروه یا کانال هنوز توسط مالک فعال نشده است.\n\n"
-            "برای استفاده از موزیک پلیر، ابتدا باید "
-            "اشتراک این چت فعال شود.",
+            "این گروه یا کانال هنوز توسط مالک ربات فعال نشده است.\n\n"
+            "👑 مالک ربات می‌تواند از دستور\n"
+            "«شارژ ربات» برای فعال‌سازی این چت استفاده کند.",
             reply_markup=keyboard,
         )
 
         return False
 
-    # --------------------------------------------------------
-    # Forced subscription
-    # --------------------------------------------------------
+    # ========================================================
+    # FORCED SUBSCRIPTION
+    # ========================================================
 
     channel = get_forced_channel(chat_id)
 
@@ -340,6 +365,7 @@ async def _check_subscription(message: Message) -> bool:
         return True
 
     try:
+
         member = await app.get_chat_member(
             username,
             message.from_user.id,
@@ -380,7 +406,7 @@ async def _check_subscription(message: Message) -> bool:
                 "╭━━━━━━━━━━━━━━━━━━╮\n"
                 "        🔐 عضویت الزامی\n"
                 "╰━━━━━━━━━━━━━━━━━━╯\n\n"
-                "برای استفاده از موزیک پلیر باید ابتدا "
+                "برای استفاده از موزیک پلیر ابتدا "
                 "در کانال مشخص‌شده عضو شوید.",
                 reply_markup=keyboard,
             )
@@ -394,7 +420,7 @@ async def _check_subscription(message: Message) -> bool:
 
         await message.reply_text(
             "❌ بررسی عضویت انجام نشد.\n\n"
-            "لطفاً مطمئن شوید ربات در کانال دسترسی لازم را دارد."
+            "مطمئن شوید ربات در کانال دسترسی لازم را دارد."
         )
 
         return False
@@ -403,20 +429,104 @@ async def _check_subscription(message: Message) -> bool:
 
 
 # ============================================================
+# Charge / Activation Keyboard
+# ============================================================
+
+def _activation_keyboard(chat_id):
+
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "🟢 ۳۰ روز",
+                    callback_data=f"charge:30:{chat_id}",
+                ),
+                InlineKeyboardButton(
+                    "🔵 ۶۰ روز",
+                    callback_data=f"charge:60:{chat_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "🟣 ۹۰ روز",
+                    callback_data=f"charge:90:{chat_id}",
+                ),
+            ],
+        ]
+    )
+
+
+# ============================================================
+# Charge command
+# ============================================================
+
+def _register_charge_handler():
+
+    @app.on_message(
+        filters.text
+        & filters.regex(
+            r"^\s*شارژ\s+ربات\s*$"
+        )
+    )
+    async def charge_handler(
+        client,
+        message,
+    ):
+
+        # فقط مالک
+        if not _message_is_owner(message):
+
+            await message.reply_text(
+                "❌ فقط مالک ربات می‌تواند شارژ انجام دهد."
+            )
+
+            return
+
+        if not message.chat:
+
+            await message.reply_text(
+                "❌ چت پیدا نشد."
+            )
+
+            return
+
+        chat_id = message.chat.id
+        title = (
+            getattr(
+                message.chat,
+                "title",
+                None,
+            )
+            or getattr(
+                message.chat,
+                "first_name",
+                None,
+            )
+            or str(chat_id)
+        )
+
+        await message.reply_text(
+            "╭━━━━━━━━━━━━━━━━━━╮\n"
+            "       👑 مدیریت شارژ\n"
+            "╰━━━━━━━━━━━━━━━━━━╯\n\n"
+            f"📌 چت: {title}\n"
+            f"🆔 شناسه: `{chat_id}`\n\n"
+            "مدت فعال‌سازی را انتخاب کن:",
+            reply_markup=_activation_keyboard(
+                chat_id
+            ),
+        )
+
+
+# ============================================================
 # Player keyboard
 # ============================================================
 
 def _player_keyboard(chat_id: int):
-    """
-    چیدمان کنترل شبیه پلیر موبایل.
-    """
 
     return InlineKeyboardMarkup(
         [
 
-            # ------------------------------------------------
-            # Seek
-            # ------------------------------------------------
             [
                 InlineKeyboardButton(
                     "⏪ ۳۰ ثانیه",
@@ -428,9 +538,6 @@ def _player_keyboard(chat_id: int):
                 ),
             ],
 
-            # ------------------------------------------------
-            # Main controls
-            # ------------------------------------------------
             [
                 InlineKeyboardButton(
                     "⏮",
@@ -450,9 +557,6 @@ def _player_keyboard(chat_id: int):
                 ),
             ],
 
-            # ------------------------------------------------
-            # Queue / stop
-            # ------------------------------------------------
             [
                 InlineKeyboardButton(
                     "📋 صف پخش",
@@ -464,9 +568,6 @@ def _player_keyboard(chat_id: int):
                 ),
             ],
 
-            # ------------------------------------------------
-            # Volume
-            # ------------------------------------------------
             [
                 InlineKeyboardButton(
                     "🔉 صدا −",
@@ -478,9 +579,6 @@ def _player_keyboard(chat_id: int):
                 ),
             ],
 
-            # ------------------------------------------------
-            # Information
-            # ------------------------------------------------
             [
                 InlineKeyboardButton(
                     "🎵 آهنگ فعلی",
@@ -500,9 +598,6 @@ def _player_keyboard(chat_id: int):
 # ============================================================
 
 def _progress_bar(position, duration, length=18):
-    """
-    نوار پیشرفت شبیه موزیک پلیر.
-    """
 
     try:
         position = max(
@@ -547,7 +642,7 @@ def _progress_bar(position, duration, length=18):
 
 
 # ============================================================
-# Now Playing text
+# Now Playing
 # ============================================================
 
 def _now_playing_text(
@@ -589,15 +684,11 @@ def _now_playing_text(
         "╭━━━━━━━━━━━━━━━━━━━━╮\n"
         "       🎧 𝗦𝗜𝗟𝗘𝗡𝗧 𝗣𝗟𝗔𝗬𝗘𝗥\n"
         "╰━━━━━━━━━━━━━━━━━━━━╯\n\n"
-
         f"🎵  {title}\n"
         f"🎤  {artist}\n\n"
-
         f"⏱  {current_position}  /  {duration}\n"
         f"{bar}\n\n"
-
         f"👤 درخواست‌کننده: {requester}\n\n"
-
         "🔵  در حال پخش\n"
         "━━━━━━━━━━━━━━━━━━━━"
     )
@@ -619,7 +710,9 @@ async def _send_now_playing(
     position = 0
 
     try:
+
         if player:
+
             get_position = getattr(
                 player,
                 "get_position",
@@ -627,6 +720,7 @@ async def _send_now_playing(
             )
 
             if get_position:
+
                 result = get_position(
                     message.chat.id
                 )
@@ -654,19 +748,14 @@ async def _send_now_playing(
         message.chat.id
     )
 
-    # --------------------------------------------------------
-    # اول عکس پروفایل ربات
-    # --------------------------------------------------------
-
     profile_photo = await _get_bot_profile_photo(
         app
     )
 
-    # اگر ربات عکس داشته باشد،
-    # همان عکس بالای Now Playing قرار می‌گیرد.
     if profile_photo:
 
         try:
+
             sent = await message.reply_photo(
                 profile_photo,
                 caption=text,
@@ -684,11 +773,6 @@ async def _send_now_playing(
                 "BOT PROFILE PHOTO SEND ERROR"
             )
 
-    # --------------------------------------------------------
-    # اگر عکس پروفایل موجود نبود،
-    # thumbnail آهنگ امتحان می‌شود.
-    # --------------------------------------------------------
-
     thumbnail = _track_thumbnail(
         track
     )
@@ -696,6 +780,7 @@ async def _send_now_playing(
     if thumbnail:
 
         try:
+
             sent = await message.reply_photo(
                 thumbnail,
                 caption=text,
@@ -712,10 +797,6 @@ async def _send_now_playing(
             logger.exception(
                 "TRACK THUMBNAIL SEND ERROR"
             )
-
-    # --------------------------------------------------------
-    # fallback
-    # --------------------------------------------------------
 
     sent = await message.reply_text(
         text,
@@ -817,17 +898,21 @@ async def _play_local_reply_file(
 ):
 
     if player is None:
+
         await message.reply_text(
             "❌ پخش‌کننده آماده نیست."
         )
+
         return
 
     reply = message.reply_to_message
 
     if reply is None:
+
         await message.reply_text(
             "❌ پیام ریپلای‌شده پیدا نشد."
         )
+
         return
 
     try:
@@ -906,13 +991,8 @@ async def _play_local_reply_file(
 
             return
 
-        title = _get_media_title(
-            media
-        )
-
-        artist = _get_media_artist(
-            media
-        )
+        title = _get_media_title(media)
+        artist = _get_media_artist(media)
 
         track = TrackInfo(
             title=title,
@@ -989,7 +1069,7 @@ async def _play_local_reply_file(
 
 
 # ============================================================
-# Download/search
+# Download / Search
 # ============================================================
 
 async def _download_track(query):
@@ -998,10 +1078,6 @@ async def _download_track(query):
         return None
 
     downloader = player.downloader
-
-    # --------------------------------------------------------
-    # URL
-    # --------------------------------------------------------
 
     if _is_url(query):
 
@@ -1028,10 +1104,6 @@ async def _download_track(query):
         )
 
         return track
-
-    # --------------------------------------------------------
-    # Search
-    # --------------------------------------------------------
 
     results = await downloader.search(
         query,
@@ -1067,9 +1139,11 @@ async def _search_and_play(
 ):
 
     if player is None:
+
         await message.reply_text(
             "❌ پخش‌کننده آماده نیست."
         )
+
         return
 
     query = (
@@ -1152,9 +1226,7 @@ async def _search_and_play(
 
             return
 
-        track.filepath = str(
-            filepath
-        )
+        track.filepath = str(filepath)
 
         track.requested_by = (
             message.from_user.id
@@ -1214,7 +1286,7 @@ async def _search_and_play(
 
 
 # ============================================================
-# PLAY command
+# PLAY
 # ============================================================
 
 def _register_play_handler():
@@ -1230,13 +1302,9 @@ def _register_play_handler():
         message,
     ):
 
-        _register_activity(
-            message
-        )
+        _register_activity(message)
 
-        if not await _check_subscription(
-            message
-        ):
+        if not await _check_subscription(message):
             return
 
         text = message.text or ""
@@ -1249,19 +1317,12 @@ def _register_play_handler():
         query = ""
 
         if match:
-
             query = (
                 match.group(1)
                 or ""
             ).strip()
 
-        # ----------------------------------------------------
-        # Reply media first
-        # ----------------------------------------------------
-
-        media = _get_reply_media(
-            message
-        )
+        media = _get_reply_media(message)
 
         if media and not query:
 
@@ -1273,10 +1334,6 @@ def _register_play_handler():
 
             return
 
-        # ----------------------------------------------------
-        # Name / URL
-        # ----------------------------------------------------
-
         if query:
 
             await _search_and_play(
@@ -1285,10 +1342,6 @@ def _register_play_handler():
             )
 
             return
-
-        # ----------------------------------------------------
-        # URL inside replied message
-        # ----------------------------------------------------
 
         reply = message.reply_to_message
 
@@ -1345,9 +1398,7 @@ def _register_pause_handler():
         message,
     ):
 
-        if not await _check_subscription(
-            message
-        ):
+        if not await _check_subscription(message):
             return
 
         if player is None:
@@ -1383,9 +1434,7 @@ def _register_resume_handler():
         message,
     ):
 
-        if not await _check_subscription(
-            message
-        ):
+        if not await _check_subscription(message):
             return
 
         if player is None:
@@ -1421,9 +1470,7 @@ def _register_stop_handler():
         message,
     ):
 
-        if not await _check_subscription(
-            message
-        ):
+        if not await _check_subscription(message):
             return
 
         if player is None:
@@ -1459,9 +1506,7 @@ def _register_current_handler():
         message,
     ):
 
-        if not await _check_subscription(
-            message
-        ):
+        if not await _check_subscription(message):
             return
 
         track = _get_current_track(
@@ -1500,6 +1545,11 @@ def _register_status_handler():
         client,
         message,
     ):
+
+        if not _message_is_owner(message):
+
+            if not await _check_subscription(message):
+                return
 
         if player is None:
             return
@@ -1578,11 +1628,9 @@ def _register_help_handler():
             "╭━━━━━━━━━━━━━━━━━━╮\n"
             "       🎧 𝗦𝗜𝗟𝗘𝗡𝗧 𝗣𝗟𝗔𝗬𝗘𝗥\n"
             "╰━━━━━━━━━━━━━━━━━━╯\n\n"
-
             "🎵 پخش نام آهنگ\n"
             "📁 ریپلای فایل + پخش\n"
             "🔗 پخش لینک\n\n"
-
             "⏸ مکث\n"
             "▶️ ادامه\n"
             "⏭ بعدی\n"
@@ -1590,9 +1638,9 @@ def _register_help_handler():
             "⏹ اتمام\n"
             "📋 صف\n"
             "🔊 کنترل صدا\n\n"
-
             "🎧 الان\n"
-            "📊 وضعیت"
+            "📊 وضعیت\n\n"
+            "👑 مالک: شارژ ربات"
         )
 
 
@@ -1638,13 +1686,10 @@ def _register_start_handler():
             "╭━━━━━━━━━━━━━━━━━━╮\n"
             "       🎧 𝗦𝗜𝗟𝗘𝗡𝗧 𝗣𝗟𝗔𝗬𝗘𝗥\n"
             "╰━━━━━━━━━━━━━━━━━━╯\n\n"
-
             "سلام 👋\n\n"
             "🎶 ربات سایلنت همیشه آنلاین می‌باشد.\n\n"
-
             "برای پخش آهنگ در گروه:\n"
             "🎵 پخش نام آهنگ\n\n"
-
             "برای فایل تلگرام:\n"
             "📁 روی فایل ریپلای کن و «پخش» بزن.",
             reply_markup=keyboard,
@@ -1707,11 +1752,8 @@ def _register_callback_handler():
 
             return
 
-        # ----------------------------------------------------
-        # امنیت: دکمه باید متعلق به همان چت باشد
-        # ----------------------------------------------------
-
         if not callback.message:
+
             await callback.answer()
             return
 
@@ -1724,15 +1766,32 @@ def _register_callback_handler():
 
             return
 
-        # ----------------------------------------------------
-        # Pause
-        # ----------------------------------------------------
+        # مالک همیشه آزاد است؛ بقیه باید فعال باشند.
+        if not _callback_is_owner(callback):
+
+            try:
+
+                if not is_chat_active(chat_id):
+
+                    await callback.answer(
+                        "🔒 این چت فعال نیست.",
+                        show_alert=True,
+                    )
+
+                    return
+
+            except Exception:
+
+                await callback.answer(
+                    "❌ وضعیت فعال‌سازی مشخص نیست.",
+                    show_alert=True,
+                )
+
+                return
 
         if action == "pause":
 
-            ok = await player.pause(
-                chat_id
-            )
+            ok = await player.pause(chat_id)
 
             await callback.answer(
                 "⏸ مکث شد."
@@ -1743,15 +1802,9 @@ def _register_callback_handler():
 
             return
 
-        # ----------------------------------------------------
-        # Resume
-        # ----------------------------------------------------
-
         if action == "resume":
 
-            ok = await player.resume(
-                chat_id
-            )
+            ok = await player.resume(chat_id)
 
             await callback.answer(
                 "▶️ ادامه پخش."
@@ -1762,15 +1815,9 @@ def _register_callback_handler():
 
             return
 
-        # ----------------------------------------------------
-        # Stop
-        # ----------------------------------------------------
-
         if action == "stop":
 
-            ok = await player.stop(
-                chat_id
-            )
+            ok = await player.stop(chat_id)
 
             await callback.answer(
                 "⏹ پخش پایان یافت."
@@ -1780,10 +1827,6 @@ def _register_callback_handler():
             )
 
             return
-
-        # ----------------------------------------------------
-        # Next
-        # ----------------------------------------------------
 
         if action == "next":
 
@@ -1802,9 +1845,7 @@ def _register_callback_handler():
 
                 return
 
-            ok = await method(
-                chat_id
-            )
+            ok = await method(chat_id)
 
             await callback.answer(
                 "⏭ آهنگ بعدی."
@@ -1814,10 +1855,6 @@ def _register_callback_handler():
             )
 
             return
-
-        # ----------------------------------------------------
-        # Previous
-        # ----------------------------------------------------
 
         if action == "prev":
 
@@ -1836,9 +1873,7 @@ def _register_callback_handler():
 
                 return
 
-            ok = await method(
-                chat_id
-            )
+            ok = await method(chat_id)
 
             await callback.answer(
                 "⏮ آهنگ قبلی."
@@ -1848,10 +1883,6 @@ def _register_callback_handler():
             )
 
             return
-
-        # ----------------------------------------------------
-        # Queue
-        # ----------------------------------------------------
 
         if action == "queue":
 
@@ -1865,19 +1896,19 @@ def _register_callback_handler():
                     None,
                 )
 
-                if isinstance(
-                    queues,
-                    dict,
-                ):
+                if isinstance(queues, dict):
+
                     queue = queues.get(
                         chat_id,
                         [],
                     )
 
                 elif queues:
+
                     queue = queues
 
             except Exception:
+
                 queue = []
 
             if not queue:
@@ -1913,10 +1944,6 @@ def _register_callback_handler():
 
             return
 
-        # ----------------------------------------------------
-        # Current
-        # ----------------------------------------------------
-
         if action == "current":
 
             track = _get_current_track(
@@ -1941,10 +1968,6 @@ def _register_callback_handler():
             await callback.answer()
 
             return
-
-        # ----------------------------------------------------
-        # Refresh
-        # ----------------------------------------------------
 
         if action == "refresh":
 
@@ -1998,10 +2021,6 @@ def _register_callback_handler():
 
             return
 
-        # ----------------------------------------------------
-        # Volume up
-        # ----------------------------------------------------
-
         if action == "volup":
 
             method = getattr(
@@ -2030,6 +2049,7 @@ def _register_callback_handler():
                     status = await status
 
             except Exception:
+
                 status = {}
 
             current = int(
@@ -2045,19 +2065,10 @@ def _register_callback_handler():
                 current + 10,
             )
 
-            try:
-
-                ok = await method(
-                    chat_id,
-                    volume,
-                )
-
-            except TypeError:
-
-                ok = await method(
-                    chat_id,
-                    volume,
-                )
+            ok = await method(
+                chat_id,
+                volume,
+            )
 
             await callback.answer(
                 f"🔊 صدا: {volume}"
@@ -2067,10 +2078,6 @@ def _register_callback_handler():
             )
 
             return
-
-        # ----------------------------------------------------
-        # Volume down
-        # ----------------------------------------------------
 
         if action == "voldown":
 
@@ -2100,6 +2107,7 @@ def _register_callback_handler():
                     status = await status
 
             except Exception:
+
                 status = {}
 
             current = int(
@@ -2115,19 +2123,10 @@ def _register_callback_handler():
                 current - 10,
             )
 
-            try:
-
-                ok = await method(
-                    chat_id,
-                    volume,
-                )
-
-            except TypeError:
-
-                ok = await method(
-                    chat_id,
-                    volume,
-                )
+            ok = await method(
+                chat_id,
+                volume,
+            )
 
             await callback.answer(
                 f"🔉 صدا: {volume}"
@@ -2137,13 +2136,6 @@ def _register_callback_handler():
             )
 
             return
-
-        # ----------------------------------------------------
-        # Seek
-        #
-        # player.py فعلی هنوز seek واقعی ندارد.
-        # دکمه‌ها فعلاً امن هستند و پیام مناسب می‌دهند.
-        # ----------------------------------------------------
 
         if action == "back30":
 
@@ -2231,11 +2223,12 @@ def _register_callback_handler():
                         or 0
                     )
 
-                    new_position = int(
-                        position or 0
-                    ) + 30
+                    new_position = (
+                        int(position or 0) + 30
+                    )
 
                     if duration > 0:
+
                         new_position = min(
                             duration,
                             new_position,
@@ -2272,6 +2265,156 @@ def _register_callback_handler():
 
 
 # ============================================================
+# Charge callbacks
+# ============================================================
+
+def _register_charge_callback():
+
+    @app.on_callback_query(
+        filters.regex(
+            r"^charge:"
+        )
+    )
+    async def charge_callback(
+        client,
+        callback: CallbackQuery,
+    ):
+
+        # ====================================================
+        # فقط مالک
+        # ====================================================
+
+        if not _callback_is_owner(callback):
+
+            await callback.answer(
+                "❌ فقط مالک ربات اجازه شارژ دارد.",
+                show_alert=True,
+            )
+
+            return
+
+        data = (
+            callback.data
+            or ""
+        ).split(":")
+
+        if len(data) != 3:
+
+            await callback.answer(
+                "❌ اطلاعات شارژ نامعتبر است.",
+                show_alert=True,
+            )
+
+            return
+
+        try:
+
+            days = int(data[1])
+            chat_id = int(data[2])
+
+        except Exception:
+
+            await callback.answer(
+                "❌ اطلاعات شارژ نامعتبر است.",
+                show_alert=True,
+            )
+
+            return
+
+        if days not in (
+            30,
+            60,
+            90,
+        ):
+
+            await callback.answer(
+                "❌ مدت شارژ مجاز نیست.",
+                show_alert=True,
+            )
+
+            return
+
+        # امنیت:
+        # دکمه باید متعلق به همان چت باشد.
+        if (
+            callback.message
+            and callback.message.chat
+            and callback.message.chat.id != chat_id
+        ):
+
+            await callback.answer(
+                "❌ این دکمه متعلق به این چت نیست.",
+                show_alert=True,
+            )
+
+            return
+
+        title = "چت"
+
+        try:
+
+            chat = await client.get_chat(
+                chat_id
+            )
+
+            title = (
+                getattr(
+                    chat,
+                    "title",
+                    None,
+                )
+                or getattr(
+                    chat,
+                    "first_name",
+                    None,
+                )
+                or str(chat_id)
+            )
+
+        except Exception:
+            pass
+
+        try:
+
+            activate_chat(
+                chat_id,
+                title,
+                days,
+            )
+
+        except Exception:
+
+            logger.exception(
+                "CHAT ACTIVATION ERROR"
+            )
+
+            await callback.answer(
+                "❌ فعال‌سازی انجام نشد.",
+                show_alert=True,
+            )
+
+            return
+
+        await callback.answer(
+            f"✅ ربات برای {days} روز فعال شد.",
+            show_alert=True,
+        )
+
+        if callback.message:
+
+            await callback.message.edit_text(
+                "╭━━━━━━━━━━━━━━━━━━╮\n"
+                "       👑 فعال‌سازی موفق\n"
+                "╰━━━━━━━━━━━━━━━━━━╯\n\n"
+                f"📌 چت: {title}\n"
+                f"🆔 شناسه: `{chat_id}`\n"
+                f"⏳ مدت: {days} روز\n\n"
+                "🟢 وضعیت ربات: فعال\n"
+                "🎧 موزیک پلیر آماده استفاده است."
+            )
+
+
+# ============================================================
 # Forced subscription callback
 # ============================================================
 
@@ -2297,6 +2440,16 @@ def _register_subscription_callback():
 
             await callback.answer(
                 "خطا.",
+                show_alert=True,
+            )
+
+            return
+
+        # مالک نیازی به بررسی عضویت ندارد.
+        if _callback_is_owner(callback):
+
+            await callback.answer(
+                "👑 مالک ربات نیازی به عضویت اجباری ندارد.",
                 show_alert=True,
             )
 
@@ -2380,16 +2533,12 @@ def _register_start_callback():
             "╭━━━━━━━━━━━━━━━━━━╮\n"
             "       🎧 راهنمای سایلنت\n"
             "╰━━━━━━━━━━━━━━━━━━╯\n\n"
-
             "🎵 پخش آهنگ:\n"
             "پخش نام آهنگ\n\n"
-
             "📁 فایل تلگرام:\n"
             "روی فایل ریپلای کن و بنویس «پخش»\n\n"
-
             "🔗 لینک:\n"
             "روی لینک ریپلای کن و «پخش» بزن.\n\n"
-
             "🎛 کنترل‌ها از طریق دکمه‌های زیر کارت آهنگ انجام می‌شوند."
         )
 
@@ -2421,7 +2570,7 @@ def _register_system_callbacks():
         if action == "activation":
 
             await callback.answer(
-                "💳 فعال‌سازی چت توسط مالک انجام می‌شود.",
+                "💳 برای فعال‌سازی، مالک ربات باید دستور «شارژ ربات» را در همین چت اجرا کند.",
                 show_alert=True,
             )
 
@@ -2430,7 +2579,7 @@ def _register_system_callbacks():
         if action == "owner":
 
             await callback.answer(
-                "👑 برای ارتباط با مالک از بخش پشتیبانی ربات استفاده کنید.",
+                "👑 این ربات توسط مالک مدیریت می‌شود.",
                 show_alert=True,
             )
 
@@ -2459,6 +2608,8 @@ def register_handlers():
 
     _register_help_handler()
 
+    _register_charge_handler()
+
     _register_play_handler()
 
     _register_pause_handler()
@@ -2472,6 +2623,8 @@ def register_handlers():
     _register_status_handler()
 
     _register_callback_handler()
+
+    _register_charge_callback()
 
     _register_subscription_callback()
 
