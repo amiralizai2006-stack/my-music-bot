@@ -1,8 +1,6 @@
-# Main requirements file - installs base requirements only
-# For voice chat support on Linux, also install: pip install -r requirements-linux.txt
-# On Android/Termux, only base requirements will work (voice chat not supported)
-
-# Base requirements (all platforms)
--r requirements-base.txt
-py-tgcalls
-tgcrypto
+pyrogram==2.0.106
+tgcrypto==1.2.5
+pytgcalls==2.3.3
+yt-dlp[default]
+requests
+aiohttp
