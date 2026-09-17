@@ -1,10 +1,15 @@
 """
-Telegram Music Downloader / Player
-Compatible with modern PyTgCalls API.
+Persian Telegram Music Downloader / Player
+- Search by song name
+- Download audio with yt-dlp
+- Play through PyTgCalls
+- Supports direct URLs
 """
 
 import asyncio
 import logging
+import re
+import uuid
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
@@ -16,8 +21,6 @@ from config import config
 from optional_deps import (
     VOICE_CHAT_AVAILABLE,
     MediaStream,
-    AudioQuality,
-    VideoQuality,
 )
 
 logger = logging.getLogger(__name__)
@@ -38,7 +41,7 @@ class MusicDownloader:
 
     def __init__(self):
         self.downloads_dir = Path(
-            config.downloads_dir
+            getattr(config, "downloads_dir", "downloads")
         )
 
         self.downloads_dir.mkdir(
@@ -46,14 +49,22 @@ class MusicDownloader:
             exist_ok=True,
         )
 
-        self._ydl_opts = {
-            "format": config.ytdl_format,
-            "outtmpl": str(
-                self.downloads_dir / "%(title)s.%(ext)s"
-            ),
+    def _clean_filename(self, name: str) -> str:
+        name = re.sub(r'[\\/*?:"<>|]', "_", name)
+        name = re.sub(r"\s+", " ", name).strip()
+        return name[:150] or "music"
+
+    def _base_opts(self):
+        return {
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
+            "nocheckcertificate": True,
+            "ignoreerrors": False,
+            "retries": 3,
+            "fragment_retries": 3,
+            "concurrent_fragment_downloads": 1,
+            "socket_timeout": 30,
         }
 
     async def extract_info(
@@ -62,26 +73,84 @@ class MusicDownloader:
     ) -> Optional[TrackInfo]:
 
         loop = asyncio.get_running_loop()
+        query = query.strip()
+
+        if not query:
+            return None
 
         try:
+
             def _extract():
-                with yt_dlp.YoutubeDL({
-                    **self._ydl_opts,
-                    "extract_flat": True,
-                }) as ydl:
+
+                opts = {
+                    **self._base_opts(),
+                    "extract_flat": False,
+                }
+
+                with yt_dlp.YoutubeDL(opts) as ydl:
 
                     if query.startswith(
                         ("http://", "https://")
                     ):
-                        return ydl.extract_info(
+                        info = ydl.extract_info(
                             query,
                             download=False,
                         )
+                    else:
+                        info = ydl.extract_info(
+                            f"ytsearch1:{query}",
+                            download=False,
+                        )
 
-                    return ydl.extract_info(
-                        f"ytsearch1:{query}",
-                        download=False,
-                    )
+                    if not info:
+                        return None
+
+                    if "entries" in info:
+                        entries = info.get("entries") or []
+
+                        if not entries:
+                            return None
+
+                        info = entries[0]
+
+                    if not info:
+                        return None
+
+                    return {
+                        "title": info.get(
+                            "title",
+                            "Unknown",
+                        ),
+                        "duration": int(
+                            info.get(
+                                "duration",
+                                0,
+                            ) or 0
+                        ),
+                        "url": info.get(
+                            "url",
+                            "",
+                        ) or "",
+                        "webpage_url": (
+                            info.get(
+                                "webpage_url",
+                                "",
+                            )
+                            or info.get(
+                                "original_url",
+                                "",
+                            )
+                            or ""
+                        ),
+                        "thumbnail": info.get(
+                            "thumbnail",
+                            "",
+                        ) or "",
+                        "uploader": info.get(
+                            "uploader",
+                            "Unknown",
+                        ) or "Unknown",
+                    }
 
             info = await loop.run_in_executor(
                 None,
@@ -89,49 +158,18 @@ class MusicDownloader:
             )
 
             if not info:
+                logger.error(
+                    "No music information found for: %s",
+                    query,
+                )
                 return None
 
-            if "entries" in info:
-                entries = info.get("entries") or []
-
-                if not entries:
-                    return None
-
-                info = entries[0]
-
-            if not info:
-                return None
-
-            return TrackInfo(
-                title=info.get(
-                    "title",
-                    "Unknown",
-                ),
-                duration=info.get(
-                    "duration",
-                    0,
-                ) or 0,
-                url=info.get(
-                    "url",
-                    "",
-                ),
-                webpage_url=info.get(
-                    "webpage_url",
-                    "",
-                ),
-                thumbnail=info.get(
-                    "thumbnail",
-                    "",
-                ),
-                uploader=info.get(
-                    "uploader",
-                    "Unknown",
-                ),
-            )
+            return TrackInfo(**info)
 
         except Exception:
             logger.exception(
-                "Error extracting track information"
+                "Extract info failed for: %s",
+                query,
             )
             return None
 
@@ -144,11 +182,15 @@ class MusicDownloader:
         loop = asyncio.get_running_loop()
 
         try:
+
             def _search():
-                with yt_dlp.YoutubeDL({
-                    **self._ydl_opts,
+
+                opts = {
+                    **self._base_opts(),
                     "extract_flat": True,
-                }) as ydl:
+                }
+
+                with yt_dlp.YoutubeDL(opts) as ydl:
 
                     return ydl.extract_info(
                         f"ytsearch{limit}:{query}",
@@ -165,13 +207,17 @@ class MusicDownloader:
             if not info:
                 return tracks
 
-            for entry in info.get(
-                "entries",
-                [],
-            ):
+            for entry in info.get("entries") or []:
 
                 if not entry:
                     continue
+
+                webpage_url = (
+                    entry.get("webpage_url")
+                    or entry.get("original_url")
+                    or entry.get("url")
+                    or ""
+                )
 
                 tracks.append(
                     TrackInfo(
@@ -179,26 +225,25 @@ class MusicDownloader:
                             "title",
                             "Unknown",
                         ),
-                        duration=entry.get(
-                            "duration",
-                            0,
-                        ) or 0,
+                        duration=int(
+                            entry.get(
+                                "duration",
+                                0,
+                            ) or 0
+                        ),
                         url=entry.get(
                             "url",
                             "",
-                        ),
-                        webpage_url=entry.get(
-                            "webpage_url",
-                            "",
-                        ),
+                        ) or "",
+                        webpage_url=webpage_url,
                         thumbnail=entry.get(
                             "thumbnail",
                             "",
-                        ),
+                        ) or "",
                         uploader=entry.get(
                             "uploader",
                             "Unknown",
-                        ),
+                        ) or "Unknown",
                     )
                 )
 
@@ -206,7 +251,8 @@ class MusicDownloader:
 
         except Exception:
             logger.exception(
-                "Music search failed"
+                "Music search failed: %s",
+                query,
             )
             return []
 
@@ -219,15 +265,38 @@ class MusicDownloader:
 
         try:
 
+            source = (
+                track.webpage_url
+                or track.url
+            )
+
+            if not source:
+                logger.error(
+                    "No valid source URL for: %s",
+                    track.title,
+                )
+                return None
+
+            file_id = uuid.uuid4().hex
+
             output_template = str(
                 self.downloads_dir
-                / "%(id)s.%(ext)s"
+                / f"{file_id}.%(ext)s"
             )
 
             ydl_opts = {
-                **self._ydl_opts,
-                "format": "bestaudio/best",
+                **self._base_opts(),
+
+                # Prefer audio formats that do not require
+                # unnecessary video processing.
+                "format": (
+                    "bestaudio[ext=m4a]/"
+                    "bestaudio[ext=webm]/"
+                    "bestaudio/best"
+                ),
+
                 "outtmpl": output_template,
+
                 "postprocessors": [
                     {
                         "key": "FFmpegExtractAudio",
@@ -239,54 +308,99 @@ class MusicDownloader:
 
             def _download():
 
+                logger.info(
+                    "Downloading music: %s",
+                    track.title,
+                )
+
                 with yt_dlp.YoutubeDL(
                     ydl_opts
                 ) as ydl:
 
-                    ydl.download([
-                        track.webpage_url
-                    ])
+                    result = ydl.download([source])
 
-                    candidates = sorted(
-                        self.downloads_dir.glob("*"),
-                        key=lambda p: p.stat().st_mtime,
-                        reverse=True,
+                    logger.info(
+                        "yt-dlp result: %s",
+                        result,
                     )
 
-                    for file in candidates:
+                # Find the file created for this request.
+                candidates = list(
+                    self.downloads_dir.glob(
+                        f"{file_id}.*"
+                    )
+                )
 
-                        if file.suffix.lower() in (
-                            ".mp3",
-                            ".m4a",
-                            ".webm",
-                            ".opus",
-                            ".wav",
-                        ):
-                            return str(file)
+                # FFmpeg normally produces .mp3.
+                preferred = [
+                    p for p in candidates
+                    if p.suffix.lower() == ".mp3"
+                ]
 
-                    return None
+                if preferred:
+                    return str(preferred[0])
+
+                # Fallback if post-processing produced
+                # another supported audio format.
+                supported = {
+                    ".m4a",
+                    ".webm",
+                    ".opus",
+                    ".wav",
+                    ".ogg",
+                    ".mp3",
+                }
+
+                for file in candidates:
+                    if file.suffix.lower() in supported:
+                        return str(file)
+
+                return None
 
             filepath = await loop.run_in_executor(
                 None,
                 _download,
             )
 
-            if filepath and Path(filepath).exists():
+            if not filepath:
+                logger.error(
+                    "yt-dlp downloaded nothing for: %s",
+                    track.title,
+                )
+                return None
 
-                track.filepath = filepath
+            path = Path(filepath)
 
-                logger.info(
-                    "Downloaded: %s",
+            if not path.exists():
+                logger.error(
+                    "Downloaded file does not exist: %s",
                     filepath,
                 )
+                return None
 
-                return filepath
+            if path.stat().st_size < 1024:
+                logger.error(
+                    "Downloaded file is too small: %s",
+                    filepath,
+                )
+                try:
+                    path.unlink()
+                except Exception:
+                    pass
+                return None
 
-            return None
+            track.filepath = filepath
+
+            logger.info(
+                "Music downloaded successfully: %s",
+                filepath,
+            )
+
+            return filepath
 
         except Exception:
             logger.exception(
-                "Download failed: %s",
+                "DOWNLOAD ERROR - %s",
                 track.title,
             )
             return None
@@ -336,10 +450,9 @@ class MusicPlayer:
             )
             return False
 
-        if not Path(
-            track.filepath
-        ).exists():
+        path = Path(track.filepath)
 
+        if not path.exists():
             logger.error(
                 "Audio file does not exist: %s",
                 track.filepath,
@@ -349,7 +462,7 @@ class MusicPlayer:
         try:
 
             stream = MediaStream(
-                track.filepath,
+                str(path),
                 video_flags=MediaStream.Flags.IGNORE,
             )
 
@@ -360,12 +473,11 @@ class MusicPlayer:
 
             self.current_track = track
             self.current_chat_id = chat_id
-
             self.is_playing = True
             self.is_paused = False
 
             logger.info(
-                "🎵 Playing %s in %s",
+                "Playing '%s' in chat %s",
                 track.title,
                 chat_id,
             )
@@ -374,7 +486,7 @@ class MusicPlayer:
 
         except Exception:
             logger.exception(
-                "❌ PyTgCalls play failed"
+                "PyTgCalls play failed"
             )
             return False
 
@@ -394,7 +506,6 @@ class MusicPlayer:
 
             self.current_track = None
             self.current_chat_id = None
-
             self.is_playing = False
             self.is_paused = False
 
