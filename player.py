@@ -32,14 +32,19 @@ def __post_init__(self):
         self.artist = self.performer
 
 class MusicDownloader:
-def init(self):
-self.download_dir = Path(
-os.getenv("DOWNLOAD_DIR", "downloads")
-)
-self.download_dir.mkdir(
-parents=True,
-exist_ok=True,
-)
+
+def __init__(self):
+    self.download_dir = Path(
+        os.getenv(
+            "DOWNLOAD_DIR",
+            "downloads",
+        )
+    )
+
+    self.download_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
 async def search(
     self,
@@ -61,6 +66,7 @@ async def search(
         return None
 
     def _search():
+
         options = {
             "quiet": True,
             "no_warnings": True,
@@ -69,13 +75,19 @@ async def search(
             "default_search": "ytsearch",
         }
 
-        with yt_dlp.YoutubeDL(options) as ydl:
+        with yt_dlp.YoutubeDL(
+            options
+        ) as ydl:
+
             result = ydl.extract_info(
                 f"ytsearch{max(1, limit)}:{query}",
                 download=False,
             )
 
-        entries = result.get("entries") or []
+        entries = (
+            result.get("entries")
+            or []
+        )
 
         if not entries:
             return None
@@ -83,8 +95,10 @@ async def search(
         item = entries[0]
 
         return TrackInfo(
-            title=item.get("title")
-            or "موزیک بدون نام",
+            title=(
+                item.get("title")
+                or "موزیک بدون نام"
+            ),
             performer=(
                 item.get("artist")
                 or item.get("uploader")
@@ -96,19 +110,25 @@ async def search(
                 or ""
             ),
             duration=int(
-                item.get("duration") or 0
+                item.get("duration")
+                or 0
             ),
-            url=item.get("url") or "",
+            url=(
+                item.get("url")
+                or ""
+            ),
             webpage_url=(
                 item.get("webpage_url")
                 or item.get("original_url")
                 or ""
             ),
             thumbnail=(
-                item.get("thumbnail") or ""
+                item.get("thumbnail")
+                or ""
             ),
             uploader=(
-                item.get("uploader") or ""
+                item.get("uploader")
+                or ""
             ),
         )
 
@@ -116,6 +136,7 @@ async def search(
         return await asyncio.to_thread(
             _search
         )
+
     except Exception:
         logger.exception(
             "Music search failed"
@@ -132,7 +153,9 @@ async def download(
 
     if (
         track.filepath
-        and Path(track.filepath).exists()
+        and Path(
+            track.filepath
+        ).exists()
     ):
         return track.filepath
 
@@ -176,33 +199,46 @@ async def download(
             ],
         }
 
-        with yt_dlp.YoutubeDL(options) as ydl:
+        with yt_dlp.YoutubeDL(
+            options
+        ) as ydl:
+
             info = ydl.extract_info(
                 source,
                 download=True,
             )
 
-            prepared = ydl.prepare_filename(
-                info
+            prepared = (
+                ydl.prepare_filename(
+                    info
+                )
             )
 
         mp3_path = str(
-            Path(prepared).with_suffix(
+            Path(
+                prepared
+            ).with_suffix(
                 ".mp3"
             )
         )
 
-        if Path(mp3_path).exists():
+        if Path(
+            mp3_path
+        ).exists():
             return mp3_path
 
-        if Path(prepared).exists():
+        if Path(
+            prepared
+        ).exists():
             return prepared
 
         return None
 
     try:
-        filepath = await asyncio.to_thread(
-            _download
+        filepath = (
+            await asyncio.to_thread(
+                _download
+            )
         )
 
         if filepath:
@@ -221,8 +257,10 @@ async def prepare(
     track: TrackInfo,
 ) -> Optional[TrackInfo]:
 
-    filepath = await self.download(
-        track
+    filepath = (
+        await self.download(
+            track
+        )
     )
 
     if not filepath:
@@ -243,41 +281,43 @@ def __init__(
     self.app = app
     self.call = call
 
-    self.downloader = MusicDownloader()
+    self.downloader = (
+        MusicDownloader()
+    )
 
     self.queues: dict[
         int,
-        list[TrackInfo]
+        list[TrackInfo],
     ] = {}
 
     self.current: dict[
         int,
-        Optional[TrackInfo]
+        Optional[TrackInfo],
     ] = {}
 
     self.history: dict[
         int,
-        list[TrackInfo]
+        list[TrackInfo],
     ] = {}
 
     self.started_at: dict[
         int,
-        float
+        float,
     ] = {}
 
     self.paused_at: dict[
         int,
-        float
+        float,
     ] = {}
 
     self.volume: dict[
         int,
-        int
+        int,
     ] = {}
 
     self.locks: dict[
         int,
-        asyncio.Lock
+        asyncio.Lock,
     ] = {}
 
 def _lock(
@@ -311,7 +351,9 @@ async def play_track(
     if not track:
         return False
 
-    async with self._lock(chat_id):
+    async with self._lock(
+        chat_id
+    ):
 
         prepared = (
             await self.downloader.prepare(
@@ -335,6 +377,7 @@ async def play_track(
             return False
 
         try:
+
             stream = MediaStream(
                 prepared.filepath
             )
@@ -354,13 +397,13 @@ async def play_track(
                     [],
                 ).append(old)
 
-            self.current[chat_id] = (
-                prepared
-            )
+            self.current[
+                chat_id
+            ] = prepared
 
-            self.started_at[chat_id] = (
-                time.time()
-            )
+            self.started_at[
+                chat_id
+            ] = time.time()
 
             self.paused_at.pop(
                 chat_id,
@@ -384,10 +427,13 @@ async def play(
     if not track:
         return False
 
-    if self.current.get(chat_id):
-        self._queue(chat_id).append(
-            track
-        )
+    if self.current.get(
+        chat_id
+    ):
+        self._queue(
+            chat_id
+        ).append(track)
+
         return True
 
     return await self.play_track(
@@ -404,9 +450,9 @@ async def add_to_queue(
     if not track:
         return False
 
-    self._queue(chat_id).append(
-        track
-    )
+    self._queue(
+        chat_id
+    ).append(track)
 
     return True
 
@@ -419,13 +465,14 @@ async def pause(
         return False
 
     try:
+
         await self.call.pause(
             chat_id
         )
 
-        self.paused_at[chat_id] = (
-            time.time()
-        )
+        self.paused_at[
+            chat_id
+        ] = time.time()
 
         return True
 
@@ -444,20 +491,24 @@ async def resume(
         return False
 
     try:
+
         await self.call.resume(
             chat_id
         )
 
-        paused = self.paused_at.pop(
-            chat_id,
-            None,
+        paused = (
+            self.paused_at.pop(
+                chat_id,
+                None,
+            )
         )
 
         if paused:
             self.started_at[
                 chat_id
             ] += (
-                time.time() - paused
+                time.time()
+                - paused
             )
 
         return True
@@ -474,10 +525,12 @@ async def stop(
 ) -> bool:
 
     try:
+
         if self.call is not None:
             await self.call.leave_call(
                 chat_id
             )
+
     except Exception:
         logger.exception(
             "Leave call failed"
@@ -510,7 +563,9 @@ async def next(
     chat_id: int,
 ) -> Optional[TrackInfo]:
 
-    queue = self._queue(chat_id)
+    queue = self._queue(
+        chat_id
+    )
 
     if not queue:
         await self.stop(
@@ -520,11 +575,15 @@ async def next(
 
     track = queue.pop(0)
 
-    self.current[chat_id] = None
+    self.current[
+        chat_id
+    ] = None
 
-    success = await self.play_track(
-        chat_id,
-        track,
+    success = (
+        await self.play_track(
+            chat_id,
+            track,
+        )
     )
 
     if not success:
@@ -559,11 +618,15 @@ async def previous(
             current,
         )
 
-    self.current[chat_id] = None
+    self.current[
+        chat_id
+    ] = None
 
-    success = await self.play_track(
-        chat_id,
-        track,
+    success = (
+        await self.play_track(
+            chat_id,
+            track,
+        )
     )
 
     if not success:
@@ -601,14 +664,15 @@ async def set_volume(
         return False
 
     try:
+
         await self.call.change_volume(
             chat_id,
             volume,
         )
 
-        self.volume[chat_id] = (
-            volume
-        )
+        self.volume[
+            chat_id
+        ] = volume
 
         return True
 
@@ -683,13 +747,17 @@ async def seek(
         )
 
     try:
+
         await self.call.seek(
             chat_id,
             position,
         )
 
-        self.started_at[chat_id] = (
-            time.time() - position
+        self.started_at[
+            chat_id
+        ] = (
+            time.time()
+            - position
         )
 
         return True
@@ -706,8 +774,10 @@ async def forward(
     seconds: int = 10,
 ) -> bool:
 
-    position = await self.get_position(
-        chat_id
+    position = (
+        await self.get_position(
+            chat_id
+        )
     )
 
     return await self.seek(
@@ -721,8 +791,10 @@ async def backward(
     seconds: int = 10,
 ) -> bool:
 
-    position = await self.get_position(
-        chat_id
+    position = (
+        await self.get_position(
+            chat_id
+        )
     )
 
     return await self.seek(
@@ -763,12 +835,16 @@ async def get_status(
         chat_id
     )
 
-    position = await self.get_position(
-        chat_id
+    position = (
+        await self.get_position(
+            chat_id
+        )
     )
 
     return {
-        "playing": current is not None,
+        "playing": (
+            current is not None
+        ),
         "current": current,
         "position": position,
         "duration": (
@@ -787,7 +863,8 @@ async def get_status(
             100,
         ),
         "paused": (
-            chat_id in self.paused_at
+            chat_id
+            in self.paused_at
         ),
     }
 
@@ -802,7 +879,10 @@ async def cleanup_files(
         chat_id
     )
 
-    if current and current.filepath:
+    if (
+        current
+        and current.filepath
+    ):
         files.append(
             current.filepath
         )
@@ -817,7 +897,9 @@ async def cleanup_files(
             )
 
     for filepath in files:
+
         try:
+
             path = Path(filepath)
 
             if path.exists():
@@ -837,6 +919,7 @@ async def cleanup_chat(
         await self.stop(
             chat_id
         )
+
     except Exception:
         logger.exception(
             "Cleanup failed"
@@ -879,4 +962,4 @@ async def cleanup_chat(
 
 :::end
 
-فقط همین کد داخل "player.py" باشد. بعد Commit کن و در Render دوباره Deploy latest commit را بزن.
+این نسخه را کامل جایگزین "player.py" کن؛ هیچ خطی قبل یا بعد از کد داخل فایل نگذار. سپس Commit و Deploy کن.
