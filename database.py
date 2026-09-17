@@ -1,437 +1,704 @@
-import aiosqlite
+from __future__ import annotations
+
+import sqlite3
+from datetime import datetime, timedelta
 from pathlib import Path
-from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 
-DB_PATH = Path("bot_data.db")
+# =========================================================
+# تنظیمات
+# =========================================================
+
+DB_PATH = Path("data/music_bot.db")
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
-class Database:
+# =========================================================
+# اتصال دیتابیس
+# =========================================================
 
-    def __init__(self, path=DB_PATH):
-        self.path = str(path)
+def get_connection():
+    conn = sqlite3.connect(
+        str(DB_PATH),
+        check_same_thread=False,
+    )
 
-    def connect(self):
-        return aiosqlite.connect(self.path)
+    conn.row_factory = sqlite3.Row
 
-    async def init(self):
-
-        async with self.connect() as db:
-
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS subscriptions (
-                    chat_id INTEGER PRIMARY KEY,
-                    activated_by INTEGER NOT NULL,
-                    expires_at TEXT NOT NULL
-                )
-            """)
-
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS required_channels (
-                    chat_id INTEGER PRIMARY KEY,
-                    channel TEXT NOT NULL,
-                    added_by INTEGER NOT NULL
-                )
-            """)
-
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS music_admins (
-                    chat_id INTEGER NOT NULL,
-                    user_id INTEGER NOT NULL,
-                    added_by INTEGER NOT NULL,
-                    PRIMARY KEY (chat_id, user_id)
-                )
-            """)
-
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS music_owner (
-                    chat_id INTEGER PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
-                    added_by INTEGER NOT NULL
-                )
-            """)
-
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS stats (
-                    chat_id INTEGER NOT NULL,
-                    user_id INTEGER NOT NULL,
-                    played INTEGER NOT NULL DEFAULT 0,
-                    PRIMARY KEY (chat_id, user_id)
-                )
-            """)
-
-            await db.commit()
+    return conn
 
 
-    async def set_subscription(self, chat_id, user_id, days):
+# =========================================================
+# ساخت جداول
+# =========================================================
 
-        now = datetime.now(timezone.utc)
-        current = await self.get_subscription(chat_id)
+def init_db():
+    conn = get_connection()
 
-        if current and current > now:
-            expires = current + timedelta(days=days)
-        else:
-            expires = now + timedelta(days=days)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            );
 
-        async with self.connect() as db:
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT DEFAULT '',
+                first_name TEXT DEFAULT '',
+                created_at TEXT,
+                last_seen TEXT,
+                play_count INTEGER DEFAULT 0
+            );
 
-            await db.execute("""
-                INSERT INTO subscriptions
-                (chat_id, activated_by, expires_at)
-                VALUES (?, ?, ?)
+            CREATE TABLE IF NOT EXISTS music_admins (
+                user_id INTEGER PRIMARY KEY,
+                added_at TEXT
+            );
 
-                ON CONFLICT(chat_id)
-                DO UPDATE SET
-                    activated_by=excluded.activated_by,
-                    expires_at=excluded.expires_at
-            """, (
-                chat_id,
-                user_id,
-                expires.isoformat()
-            ))
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                user_id INTEGER PRIMARY KEY,
+                activated_at TEXT,
+                expires_at TEXT,
+                active INTEGER DEFAULT 1
+            );
+            """
+        )
 
-            await db.commit()
+        conn.commit()
 
-        return expires
+    finally:
+        conn.close()
 
 
-    async def get_subscription(self, chat_id):
+# =========================================================
+# تنظیمات عمومی
+# =========================================================
 
-        async with self.connect() as db:
+def set_setting(
+    key: str,
+    value: str,
+):
+    conn = get_connection()
 
-            cursor = await db.execute("""
-                SELECT expires_at
-                FROM subscriptions
-                WHERE chat_id=?
-            """, (chat_id,))
+    try:
+        conn.execute(
+            """
+            INSERT INTO settings(key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key)
+            DO UPDATE SET value = excluded.value
+            """,
+            (
+                key,
+                str(value),
+            ),
+        )
 
-            row = await cursor.fetchone()
+        conn.commit()
+
+    finally:
+        conn.close()
+
+
+def get_setting(
+    key: str,
+    default: Optional[str] = None,
+):
+    conn = get_connection()
+
+    try:
+        row = conn.execute(
+            """
+            SELECT value
+            FROM settings
+            WHERE key = ?
+            """,
+            (key,),
+        ).fetchone()
 
         if not row:
-            return None
+            return default
 
-        try:
+        return row["value"]
 
-            value = datetime.fromisoformat(row[0])
-
-            if value.tzinfo is None:
-                value = value.replace(tzinfo=timezone.utc)
-
-            return value
-
-        except Exception:
-            return None
+    finally:
+        conn.close()
 
 
-    async def subscription_active(self, chat_id):
+def delete_setting(key: str):
+    conn = get_connection()
 
-        expires = await self.get_subscription(chat_id)
+    try:
+        conn.execute(
+            """
+            DELETE FROM settings
+            WHERE key = ?
+            """,
+            (key,),
+        )
 
-        if expires is None:
-            return False
+        conn.commit()
 
-        return expires > datetime.now(timezone.utc)
-
-
-    async def remove_subscription(self, chat_id):
-
-        async with self.connect() as db:
-
-            await db.execute("""
-                DELETE FROM subscriptions
-                WHERE chat_id=?
-            """, (chat_id,))
-
-            await db.commit()
+    finally:
+        conn.close()
 
 
-    async def set_required_channel(
-        self,
-        chat_id,
-        channel,
-        user_id
-    ):
+# =========================================================
+# مالک ربات
+# =========================================================
 
-        async with self.connect() as db:
-
-            await db.execute("""
-                INSERT INTO required_channels
-                (chat_id, channel, added_by)
-                VALUES (?, ?, ?)
-
-                ON CONFLICT(chat_id)
-                DO UPDATE SET
-                    channel=excluded.channel,
-                    added_by=excluded.added_by
-            """, (
-                chat_id,
-                channel,
-                user_id
-            ))
-
-            await db.commit()
+def set_owner(user_id: int):
+    set_setting(
+        "owner_id",
+        str(user_id),
+    )
 
 
-    async def get_required_channel(self, chat_id):
+def get_owner() -> Optional[int]:
+    value = get_setting(
+        "owner_id"
+    )
 
-        async with self.connect() as db:
+    if not value:
+        return None
 
-            cursor = await db.execute("""
-                SELECT channel
-                FROM required_channels
-                WHERE chat_id=?
-            """, (chat_id,))
-
-            row = await cursor.fetchone()
-
-        return row[0] if row else None
-
-
-    async def remove_required_channel(self, chat_id):
-
-        async with self.connect() as db:
-
-            await db.execute("""
-                DELETE FROM required_channels
-                WHERE chat_id=?
-            """, (chat_id,))
-
-            await db.commit()
+    try:
+        return int(value)
+    except ValueError:
+        return None
 
 
-    async def add_music_admin(
-        self,
-        chat_id,
-        user_id,
-        added_by
-    ):
+def is_owner(user_id: int) -> bool:
+    owner_id = get_owner()
 
-        async with self.connect() as db:
+    return (
+        owner_id is not None
+        and owner_id == int(user_id)
+    )
 
-            await db.execute("""
-                INSERT OR REPLACE INTO music_admins
-                (chat_id, user_id, added_by)
-                VALUES (?, ?, ?)
-            """, (
-                chat_id,
+
+# =========================================================
+# کاربران
+# =========================================================
+
+def add_user(
+    user_id: int,
+    username: str = "",
+    first_name: str = "",
+):
+    now = datetime.utcnow().isoformat()
+
+    conn = get_connection()
+
+    try:
+        conn.execute(
+            """
+            INSERT INTO users (
                 user_id,
-                added_by
-            ))
+                username,
+                first_name,
+                created_at,
+                last_seen
+            )
+            VALUES (?, ?, ?, ?, ?)
 
-            await db.commit()
+            ON CONFLICT(user_id)
+            DO UPDATE SET
+                username = excluded.username,
+                first_name = excluded.first_name,
+                last_seen = excluded.last_seen
+            """,
+            (
+                int(user_id),
+                username or "",
+                first_name or "",
+                now,
+                now,
+            ),
+        )
+
+        conn.commit()
+
+    finally:
+        conn.close()
 
 
-    async def remove_music_admin(
-        self,
-        chat_id,
-        user_id
-    ):
+def get_user(
+    user_id: int,
+):
+    conn = get_connection()
 
-        async with self.connect() as db:
+    try:
+        return conn.execute(
+            """
+            SELECT *
+            FROM users
+            WHERE user_id = ?
+            """,
+            (int(user_id),),
+        ).fetchone()
 
-            await db.execute("""
-                DELETE FROM music_admins
-                WHERE chat_id=? AND user_id=?
-            """, (
-                chat_id,
-                user_id
-            ))
-
-            await db.commit()
+    finally:
+        conn.close()
 
 
-    async def is_music_admin(
-        self,
-        chat_id,
-        user_id
-    ):
+def get_user_count() -> int:
+    conn = get_connection()
 
-        async with self.connect() as db:
+    try:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM users
+            """
+        ).fetchone()
 
-            cursor = await db.execute("""
-                SELECT 1
-                FROM music_admins
-                WHERE chat_id=? AND user_id=?
-            """, (
-                chat_id,
-                user_id
-            ))
+        return int(row["count"])
 
-            row = await cursor.fetchone()
+    finally:
+        conn.close()
+
+
+def increase_play_count(
+    user_id: int,
+):
+    conn = get_connection()
+
+    try:
+        conn.execute(
+            """
+            UPDATE users
+            SET play_count = play_count + 1,
+                last_seen = ?
+            WHERE user_id = ?
+            """,
+            (
+                datetime.utcnow().isoformat(),
+                int(user_id),
+            ),
+        )
+
+        conn.commit()
+
+    finally:
+        conn.close()
+
+
+def get_total_plays() -> int:
+    conn = get_connection()
+
+    try:
+        row = conn.execute(
+            """
+            SELECT COALESCE(
+                SUM(play_count),
+                0
+            ) AS total
+            FROM users
+            """
+        ).fetchone()
+
+        return int(row["total"])
+
+    finally:
+        conn.close()
+
+
+# =========================================================
+# مدیران موزیک
+# =========================================================
+
+def add_music_admin(
+    user_id: int,
+):
+    conn = get_connection()
+
+    try:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO music_admins(
+                user_id,
+                added_at
+            )
+            VALUES (?, ?)
+            """,
+            (
+                int(user_id),
+                datetime.utcnow().isoformat(),
+            ),
+        )
+
+        conn.commit()
+
+    finally:
+        conn.close()
+
+
+def remove_music_admin(
+    user_id: int,
+):
+    conn = get_connection()
+
+    try:
+        conn.execute(
+            """
+            DELETE FROM music_admins
+            WHERE user_id = ?
+            """,
+            (int(user_id),),
+        )
+
+        conn.commit()
+
+    finally:
+        conn.close()
+
+
+def is_music_admin(
+    user_id: int,
+) -> bool:
+    if is_owner(user_id):
+        return True
+
+    conn = get_connection()
+
+    try:
+        row = conn.execute(
+            """
+            SELECT user_id
+            FROM music_admins
+            WHERE user_id = ?
+            """,
+            (int(user_id),),
+        ).fetchone()
 
         return row is not None
 
+    finally:
+        conn.close()
 
-    async def set_music_owner(
-        self,
-        chat_id,
-        user_id,
-        added_by
-    ):
 
-        async with self.connect() as db:
+def get_music_admins() -> list[int]:
+    conn = get_connection()
 
-            await db.execute("""
-                INSERT INTO music_owner
-                (chat_id, user_id, added_by)
-                VALUES (?, ?, ?)
+    try:
+        rows = conn.execute(
+            """
+            SELECT user_id
+            FROM music_admins
+            ORDER BY added_at ASC
+            """
+        ).fetchall()
 
-                ON CONFLICT(chat_id)
-                DO UPDATE SET
-                    user_id=excluded.user_id,
-                    added_by=excluded.added_by
-            """, (
-                chat_id,
+        return [
+            int(row["user_id"])
+            for row in rows
+        ]
+
+    finally:
+        conn.close()
+
+
+# =========================================================
+# اشتراک
+# =========================================================
+
+def activate_subscription(
+    user_id: int,
+    days: int,
+):
+    """
+    فعال‌سازی اشتراک.
+
+    اگر کاربر اشتراک فعال داشته باشد،
+    زمان جدید از تاریخ انقضای فعلی اضافه می‌شود.
+    """
+
+    now = datetime.utcnow()
+
+    conn = get_connection()
+
+    try:
+        row = conn.execute(
+            """
+            SELECT expires_at, active
+            FROM subscriptions
+            WHERE user_id = ?
+            """,
+            (int(user_id),),
+        ).fetchone()
+
+        if (
+            row
+            and row["expires_at"]
+            and row["active"]
+        ):
+            try:
+                old_expiry = datetime.fromisoformat(
+                    row["expires_at"]
+                )
+            except ValueError:
+                old_expiry = now
+
+            if old_expiry > now:
+                start = old_expiry
+            else:
+                start = now
+
+        else:
+            start = now
+
+        expires = start + timedelta(
+            days=int(days)
+        )
+
+        conn.execute(
+            """
+            INSERT INTO subscriptions(
                 user_id,
-                added_by
-            ))
+                activated_at,
+                expires_at,
+                active
+            )
+            VALUES (?, ?, ?, 1)
 
-            await db.commit()
+            ON CONFLICT(user_id)
+            DO UPDATE SET
+                activated_at = excluded.activated_at,
+                expires_at = excluded.expires_at,
+                active = 1
+            """,
+            (
+                int(user_id),
+                now.isoformat(),
+                expires.isoformat(),
+            ),
+        )
+
+        conn.commit()
+
+        return expires
+
+    finally:
+        conn.close()
 
 
-    async def get_music_owner(self, chat_id):
+def deactivate_subscription(
+    user_id: int,
+):
+    conn = get_connection()
 
-        async with self.connect() as db:
+    try:
+        conn.execute(
+            """
+            UPDATE subscriptions
+            SET active = 0
+            WHERE user_id = ?
+            """,
+            (int(user_id),),
+        )
 
-            cursor = await db.execute("""
-                SELECT user_id
-                FROM music_owner
-                WHERE chat_id=?
-            """, (chat_id,))
+        conn.commit()
 
-            row = await cursor.fetchone()
-
-        return row[0] if row else None
+    finally:
+        conn.close()
 
 
-    async def increment_played(
-        self,
-        chat_id,
+def get_subscription(
+    user_id: int,
+):
+    conn = get_connection()
+
+    try:
+        return conn.execute(
+            """
+            SELECT *
+            FROM subscriptions
+            WHERE user_id = ?
+            """,
+            (int(user_id),),
+        ).fetchone()
+
+    finally:
+        conn.close()
+
+
+def is_subscription_active(
+    user_id: int,
+) -> bool:
+    row = get_subscription(
         user_id
-    ):
+    )
 
-        async with self.connect() as db:
+    if not row:
+        return False
 
-            await db.execute("""
-                INSERT INTO stats
-                (chat_id, user_id, played)
-                VALUES (?, ?, 1)
+    if not row["active"]:
+        return False
 
-                ON CONFLICT(chat_id, user_id)
-                DO UPDATE SET
-                    played=played+1
-            """, (
-                chat_id,
-                user_id
-            ))
+    expires_at = row["expires_at"]
 
-            await db.commit()
+    if not expires_at:
+        return False
+
+    try:
+        expires = datetime.fromisoformat(
+            expires_at
+        )
+    except ValueError:
+        return False
+
+    if expires <= datetime.utcnow():
+        deactivate_subscription(
+            user_id
+        )
+        return False
+
+    return True
 
 
-    async def get_played(
-        self,
-        chat_id,
+def subscription_days_left(
+    user_id: int,
+) -> int:
+    row = get_subscription(
         user_id
-    ):
+    )
 
-        async with self.connect() as db:
+    if not row or not row["active"]:
+        return 0
 
-            cursor = await db.execute("""
-                SELECT played
-                FROM stats
-                WHERE chat_id=? AND user_id=?
-            """, (
-                chat_id,
-                user_id
-            ))
+    try:
+        expires = datetime.fromisoformat(
+            row["expires_at"]
+        )
+    except (ValueError, TypeError):
+        return 0
 
-            row = await cursor.fetchone()
+    remaining = (
+        expires - datetime.utcnow()
+    ).total_seconds()
 
-        return int(row[0]) if row else 0
+    if remaining <= 0:
+        deactivate_subscription(
+            user_id
+        )
+        return 0
 
-
-db = Database()
-
-
-async def init_db():
-    return await db.init()
-
-
-async def set_subscription(chat_id, user_id, days):
-    return await db.set_subscription(chat_id, user_id, days)
-
-
-async def get_subscription(chat_id):
-    return await db.get_subscription(chat_id)
+    return max(
+        0,
+        int(
+            remaining / 86400
+        ),
+    )
 
 
-async def subscription_active(chat_id):
-    return await db.subscription_active(chat_id)
+# =========================================================
+# اشتراک‌های آماده
+# =========================================================
+
+SUBSCRIPTION_DURATIONS = {
+    "10 روز": 10,
+    "یک ماه": 30,
+    "2 ماه": 60,
+    "3 ماه": 90,
+    "6 ماه": 180,
+}
 
 
-async def remove_subscription(chat_id):
-    return await db.remove_subscription(chat_id)
+def activate_10_days(user_id: int):
+    return activate_subscription(
+        user_id,
+        10,
+    )
 
 
-async def set_required_channel(chat_id, channel, user_id):
-    return await db.set_required_channel(
-        chat_id,
+def activate_1_month(user_id: int):
+    return activate_subscription(
+        user_id,
+        30,
+    )
+
+
+def activate_2_months(user_id: int):
+    return activate_subscription(
+        user_id,
+        60,
+    )
+
+
+def activate_3_months(user_id: int):
+    return activate_subscription(
+        user_id,
+        90,
+    )
+
+
+def activate_6_months(user_id: int):
+    return activate_subscription(
+        user_id,
+        180,
+    )
+
+
+# =========================================================
+# کانال اجباری
+# =========================================================
+
+def set_required_channel(
+    channel: str,
+):
+    set_setting(
+        "required_channel",
         channel,
-        user_id
     )
 
 
-async def get_required_channel(chat_id):
-    return await db.get_required_channel(chat_id)
+def get_required_channel() -> str:
+    return get_setting(
+        "required_channel",
+        "",
+    ) or ""
 
 
-async def remove_required_channel(chat_id):
-    return await db.remove_required_channel(chat_id)
+# =========================================================
+# پشتیبانی
+# =========================================================
 
-
-async def add_music_admin(chat_id, user_id, added_by):
-    return await db.add_music_admin(
-        chat_id,
-        user_id,
-        added_by
+def set_support_username(
+    username: str,
+):
+    set_setting(
+        "support_username",
+        username,
     )
 
 
-async def remove_music_admin(chat_id, user_id):
-    return await db.remove_music_admin(
-        chat_id,
-        user_id
-    )
+def get_support_username() -> str:
+    return get_setting(
+        "support_username",
+        "",
+    ) or ""
 
 
-async def is_music_admin(chat_id, user_id):
-    return await db.is_music_admin(
-        chat_id,
-        user_id
-    )
+# =========================================================
+# آمار
+# =========================================================
+
+def get_stats() -> dict:
+    return {
+        "users": get_user_count(),
+        "plays": get_total_plays(),
+        "music_admins": len(
+            get_music_admins()
+        ),
+    }
 
 
-async def set_music_owner(chat_id, user_id, added_by):
-    return await db.set_music_owner(
-        chat_id,
-        user_id,
-        added_by
-    )
+# =========================================================
+# اجرای اولیه
+# =========================================================
 
-
-async def get_music_owner(chat_id):
-    return await db.get_music_owner(chat_id)
-
-
-async def increment_played(chat_id, user_id):
-    return await db.increment_played(
-        chat_id,
-        user_id
-    )
-
-
-async def get_played(chat_id, user_id):
-    return await db.get_played(
-        chat_id,
-        user_id
-    )
+init_db()
