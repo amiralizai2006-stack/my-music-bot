@@ -55,16 +55,13 @@ else:
     )
 
 
-# Optional psutil
 psutil = None
 HAS_PSUTIL = False
 
 if not IS_ANDROID:
     try:
         import psutil
-
         HAS_PSUTIL = True
-
     except Exception:
         psutil = None
         HAS_PSUTIL = False
