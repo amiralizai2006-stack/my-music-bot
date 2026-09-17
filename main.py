@@ -9,7 +9,6 @@ from pathlib import Path
 
 from aiohttp import web
 
-# Project root
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import config, validate_config
@@ -30,7 +29,11 @@ from pyrogram import Client
 # ============================================================
 
 logging.basicConfig(
-    level=getattr(logging, config.log_level, logging.INFO),
+    level=getattr(
+        logging,
+        config.log_level,
+        logging.INFO,
+    ),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
         logging.FileHandler(config.log_file),
@@ -45,7 +48,11 @@ logger = logging.getLogger(__name__)
 # RENDER HEALTH SERVER
 # ============================================================
 
-PORT = int(os.getenv("PORT", "10000"))
+PORT = int(
+    os.getenv("PORT", "10000")
+)
+
+health_runner = None
 
 
 async def health(request):
@@ -60,10 +67,19 @@ async def health(request):
 
 async def start_health_server():
     app = web.Application()
-    app.router.add_get("/", health)
-    app.router.add_get("/health", health)
+
+    app.router.add_get(
+        "/",
+        health,
+    )
+
+    app.router.add_get(
+        "/health",
+        health,
+    )
 
     runner = web.AppRunner(app)
+
     await runner.setup()
 
     site = web.TCPSite(
@@ -91,7 +107,11 @@ platform_info = get_platform_info()
 logger.info("=== Platform Info ===")
 
 for key, value in platform_info.items():
-    logger.info("%s: %s", key, value)
+    logger.info(
+        "%s: %s",
+        key,
+        value,
+    )
 
 logger.info("=====================")
 
@@ -103,19 +123,32 @@ logger.info("=====================")
 errors = validate_config()
 
 if errors:
-    logger.error("Configuration errors:")
+
+    logger.error(
+        "Configuration errors:"
+    )
 
     for error in errors:
-        logger.error(" - %s", error)
+        logger.error(
+            " - %s",
+            error,
+        )
 
     sys.exit(1)
 
 
-voice_supported, voice_msg = check_voice_chat_support()
+voice_supported, voice_msg = (
+    check_voice_chat_support()
+)
 
 if VOICE_CHAT_AVAILABLE:
-    logger.info("✅ Voice chat: AVAILABLE")
+
+    logger.info(
+        "✅ Voice chat: AVAILABLE"
+    )
+
 else:
+
     logger.warning(
         "⚠️ Voice chat: NOT AVAILABLE - %s",
         voice_msg,
@@ -123,45 +156,99 @@ else:
 
 
 # ============================================================
-# PYROGRAM
+# GLOBAL RUNTIME OBJECTS
 # ============================================================
 
-app = Client(
-    config.session_name,
-    api_id=config.api_id,
-    api_hash=config.api_hash,
-    bot_token=config.bot_token,
-)
-
-
-# ============================================================
-# PYTGCALLS
-# ============================================================
-
+app = None
 pytgcalls = None
+player = None
 
-if VOICE_CHAT_AVAILABLE:
-    try:
-        pytgcalls = PyTgCalls(app)
-        logger.info("✅ PyTgCalls object created")
-    except Exception:
-        logger.exception("❌ Failed to create PyTgCalls")
+shutdown_event = None
+
+
+# ============================================================
+# CREATE CLIENTS
+# ============================================================
+
+def create_runtime():
+
+    global app
+    global pytgcalls
+    global player
+    global shutdown_event
+
+    logger.info(
+        "🔧 Creating runtime objects..."
+    )
+
+    # --------------------------------------------------------
+    # Pyrogram
+    # --------------------------------------------------------
+
+    app = Client(
+        config.session_name,
+        api_id=config.api_id,
+        api_hash=config.api_hash,
+        bot_token=config.bot_token,
+    )
+
+    logger.info(
+        "✅ Pyrogram object created"
+    )
+
+    # --------------------------------------------------------
+    # IMPORTANT:
+    # PyTgCalls is created INSIDE asyncio.run(main())
+    # so it belongs to the same running event loop.
+    # --------------------------------------------------------
+
+    if VOICE_CHAT_AVAILABLE:
+
+        try:
+
+            pytgcalls = PyTgCalls(app)
+
+            logger.info(
+                "✅ PyTgCalls object created inside main loop"
+            )
+
+        except Exception:
+
+            logger.exception(
+                "❌ Failed to create PyTgCalls"
+            )
+
+            pytgcalls = None
+
+    else:
+
+        logger.warning(
+            "⚠️ PyTgCalls is unavailable"
+        )
+
         pytgcalls = None
 
+    # --------------------------------------------------------
+    # Player
+    # --------------------------------------------------------
 
-# ============================================================
-# PLAYER
-# ============================================================
+    player = MusicPlayer(
+        pytgcalls
+    )
 
-player = MusicPlayer(pytgcalls)
+    logger.info(
+        "✅ MusicPlayer created"
+    )
 
+    # --------------------------------------------------------
+    # Shutdown event
+    # --------------------------------------------------------
 
-# ============================================================
-# SHUTDOWN
-# ============================================================
+    shutdown_event = asyncio.Event()
 
-shutdown_event = asyncio.Event()
-health_runner = None
+    logger.info(
+        "✅ Shutdown event created"
+    )
 
 
 # ============================================================
@@ -172,70 +259,99 @@ async def startup():
 
     global health_runner
 
-    logger.info("🚀 Starting SILENT MUSIC BOT...")
+    logger.info(
+        "🚀 Starting SILENT MUSIC BOT..."
+    )
 
+    # ========================================================
+    # CREATE RUNTIME INSIDE CURRENT LOOP
+    # ========================================================
 
-    # --------------------------------------------------------
+    create_runtime()
+
+    # ========================================================
     # DATABASE
-    # --------------------------------------------------------
+    # ========================================================
 
     try:
+
         await db.init()
-        logger.info("✅ Database initialized")
+
+        logger.info(
+            "✅ Database initialized"
+        )
+
     except Exception:
-        logger.exception("❌ Database initialization failed")
+
+        logger.exception(
+            "❌ Database initialization failed"
+        )
+
         raise
 
-
-    # --------------------------------------------------------
+    # ========================================================
     # RENDER HEALTH SERVER
-    # --------------------------------------------------------
+    # ========================================================
 
     try:
-        health_runner = await start_health_server()
+
+        health_runner = (
+            await start_health_server()
+        )
+
     except Exception:
+
         logger.exception(
             "❌ Render health server could not start"
         )
+
         raise
 
-
-    # --------------------------------------------------------
+    # ========================================================
     # PYROGRAM
-    # --------------------------------------------------------
+    # ========================================================
 
     try:
+
         await app.start()
-        logger.info("✅ Pyrogram client started")
+
+        logger.info(
+            "✅ Pyrogram client started"
+        )
+
     except Exception:
-        logger.exception("❌ Pyrogram failed to start")
+
+        logger.exception(
+            "❌ Pyrogram failed to start"
+        )
+
         raise
 
-
-    # --------------------------------------------------------
+    # ========================================================
     # PYTGCALLS
-    # --------------------------------------------------------
+    # ========================================================
 
     if pytgcalls:
 
         try:
+
             await pytgcalls.start()
-            logger.info("✅ PyTgCalls started")
+
+            logger.info(
+                "✅ PyTgCalls started"
+            )
 
         except Exception:
+
             logger.exception(
                 "❌ PyTgCalls failed to start"
             )
 
-    else:
-        logger.warning(
-            "⚠️ PyTgCalls is unavailable"
-        )
+            raise
 
-
-    # --------------------------------------------------------
+    # ========================================================
     # HANDLERS
-    # --------------------------------------------------------
+    # ========================================================
 
     try:
 
@@ -251,15 +367,16 @@ async def startup():
         )
 
     except Exception:
+
         logger.exception(
             "❌ Handler registration failed"
         )
+
         raise
 
-
-    # --------------------------------------------------------
+    # ========================================================
     # BOT INFO
-    # --------------------------------------------------------
+    # ========================================================
 
     me = await app.get_me()
 
@@ -271,13 +388,14 @@ async def startup():
 
     logger.info(
         "📋 Admin IDs: %s",
-        config.admin_ids if config.admin_ids else "All users",
+        config.admin_ids
+        if config.admin_ids
+        else "All users",
     )
 
-
-    # --------------------------------------------------------
+    # ========================================================
     # READY
-    # --------------------------------------------------------
+    # ========================================================
 
     logger.info(
         "=================================================="
@@ -297,6 +415,10 @@ async def startup():
     )
 
     logger.info(
+        "🎧 Voice chat system initialized"
+    )
+
+    logger.info(
         "=================================================="
     )
 
@@ -308,90 +430,115 @@ async def startup():
 async def shutdown():
 
     global health_runner
+    global app
+    global pytgcalls
 
-    logger.info("🛑 Shutting down...")
+    logger.info(
+        "🛑 Shutting down..."
+    )
 
+    # ========================================================
+    # SIGNAL EVENT
+    # ========================================================
 
-    shutdown_event.set()
+    if shutdown_event:
 
+        try:
+            shutdown_event.set()
+        except Exception:
+            pass
 
-    # --------------------------------------------------------
+    # ========================================================
     # LEAVE CALLS
-    # --------------------------------------------------------
+    # ========================================================
 
     if pytgcalls:
 
         try:
+
             await pytgcalls.leave_all_calls()
+
+            logger.info(
+                "✅ Left all voice calls"
+            )
+
         except Exception:
+
             logger.exception(
                 "Error leaving calls"
             )
 
-
-    # --------------------------------------------------------
+    # ========================================================
     # PYTGCALLS STOP
-    # --------------------------------------------------------
+    # ========================================================
 
     if pytgcalls:
 
         try:
+
             await pytgcalls.stop()
+
+            logger.info(
+                "✅ PyTgCalls stopped"
+            )
+
         except Exception:
+
             logger.exception(
                 "Error stopping PyTgCalls"
             )
 
-
-    # --------------------------------------------------------
+    # ========================================================
     # PYROGRAM STOP
-    # --------------------------------------------------------
+    # ========================================================
 
-    try:
-        await app.stop()
-    except Exception:
-        logger.exception(
-            "Error stopping Pyrogram"
-        )
+    if app:
 
+        try:
 
-    # --------------------------------------------------------
+            if getattr(
+                app,
+                "is_connected",
+                False,
+            ):
+
+                await app.stop()
+
+                logger.info(
+                    "✅ Pyrogram stopped"
+                )
+
+        except Exception:
+
+            logger.exception(
+                "Error stopping Pyrogram"
+            )
+
+    # ========================================================
     # HEALTH SERVER STOP
-    # --------------------------------------------------------
+    # ========================================================
 
     if health_runner:
 
         try:
+
             await health_runner.cleanup()
+
+            logger.info(
+                "✅ Health server stopped"
+            )
+
         except Exception:
+
             logger.exception(
                 "Error stopping health server"
             )
 
         health_runner = None
 
-
     logger.info(
         "✅ Shutdown complete"
     )
-
-
-# ============================================================
-# SIGNAL HANDLER
-# ============================================================
-
-def signal_handler(signum, frame):
-
-    logger.info(
-        "Received signal %s",
-        signum,
-    )
-
-    try:
-        loop = asyncio.get_running_loop()
-        loop.create_task(shutdown())
-    except RuntimeError:
-        pass
 
 
 # ============================================================
@@ -402,28 +549,54 @@ async def main():
 
     loop = asyncio.get_running_loop()
 
+    # --------------------------------------------------------
+    # SIGNALS
+    # --------------------------------------------------------
+
+    def request_shutdown():
+
+        logger.info(
+            "🛑 Shutdown signal received"
+        )
+
+        if shutdown_event:
+
+            try:
+                shutdown_event.set()
+            except Exception:
+                pass
+
     for sig in (
         signal.SIGTERM,
         signal.SIGINT,
     ):
 
         try:
+
             loop.add_signal_handler(
                 sig,
-                signal_handler,
-                sig,
-                None,
+                request_shutdown,
             )
 
-        except (NotImplementedError, RuntimeError):
+        except (
+            NotImplementedError,
+            RuntimeError,
+        ):
+
             pass
 
+    # --------------------------------------------------------
+    # START
+    # --------------------------------------------------------
 
     try:
 
         await startup()
 
-        # Keep process alive forever.
+        # ----------------------------------------------------
+        # KEEP BOT ALIVE
+        # ----------------------------------------------------
+
         await shutdown_event.wait()
 
     except Exception:
@@ -447,7 +620,9 @@ if __name__ == "__main__":
 
     try:
 
-        asyncio.run(main())
+        asyncio.run(
+            main()
+        )
 
     except KeyboardInterrupt:
 
