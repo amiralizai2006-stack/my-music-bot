@@ -4,7 +4,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-IS_ANDROID = sys.platform == "android" or "android" in platform.platform().lower()
+IS_ANDROID = (
+    sys.platform == "android"
+    or "android" in platform.platform().lower()
+)
+
 IS_TERMUX = "com.termux" in platform.platform().lower()
 
 VOICE_CHAT_AVAILABLE = False
@@ -16,39 +20,35 @@ IMPORT_ERROR = None
 
 
 # -------------------------------------------------
-# Pyrogram / PyTgCalls compatibility fix
+# Pyrogram / PyTgCalls compatibility
 # -------------------------------------------------
 
 try:
     import pyrogram.errors
 
-    # PyTgCalls 2.3.3 expects:
-    # GroupcallForbidden
-    #
-    # Pyrogram 2.0.106 provides:
-    # GroupCallForbidden
-
+    # PyTgCalls expects GroupcallForbidden
     if not hasattr(pyrogram.errors, "GroupcallForbidden"):
-
         if hasattr(pyrogram.errors, "GroupCallForbidden"):
             pyrogram.errors.GroupcallForbidden = (
                 pyrogram.errors.GroupCallForbidden
             )
-            logger.info(
-                "✅ Pyrogram/PyTgCalls compatibility fix applied"
+
+    # PyTgCalls expects GroupcallInvalid
+    if not hasattr(pyrogram.errors, "GroupcallInvalid"):
+        if hasattr(pyrogram.errors, "GroupCallInvalid"):
+            pyrogram.errors.GroupcallInvalid = (
+                pyrogram.errors.GroupCallInvalid
             )
 
-        else:
-
-            class GroupcallForbidden(Exception):
-                pass
-
-            pyrogram.errors.GroupcallForbidden = GroupcallForbidden
+    logger.info(
+        "✅ Pyrogram/PyTgCalls compatibility aliases prepared"
+    )
 
 except Exception as e:
     IMPORT_ERROR = e
     logger.exception(
-        "❌ Could not apply Pyrogram compatibility fix"
+        "❌ Compatibility setup failed: %s",
+        e,
     )
 
 
@@ -59,7 +59,6 @@ except Exception as e:
 if not IS_ANDROID:
 
     try:
-
         from pytgcalls import PyTgCalls
         from pytgcalls.types import MediaStream
 
@@ -80,7 +79,6 @@ if not IS_ANDROID:
         )
 
     except Exception as e:
-
         IMPORT_ERROR = e
         VOICE_CHAT_AVAILABLE = False
 
@@ -105,15 +103,10 @@ psutil = None
 HAS_PSUTIL = False
 
 try:
-
     import psutil
-
     HAS_PSUTIL = True
-
 except Exception:
-
-    psutil = None
-    HAS_PSUTIL = False
+    pass
 
 
 # -------------------------------------------------
@@ -131,7 +124,6 @@ def check_voice_chat_support():
     if not VOICE_CHAT_AVAILABLE:
 
         if IMPORT_ERROR:
-
             return (
                 False,
                 f"PyTgCalls import failed: {IMPORT_ERROR}"
@@ -167,7 +159,6 @@ def get_platform_info():
         )
 
     try:
-
         import pytgcalls
 
         info["pytgcalls_version"] = getattr(
@@ -177,7 +168,6 @@ def get_platform_info():
         )
 
     except Exception:
-
         info["pytgcalls_version"] = "unknown"
 
     return info
