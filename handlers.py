@@ -20,22 +20,17 @@ player = None
 pytgcalls = None
 shutdown_event = None
 
-# ============================================================
-# تنظیمات
-# ============================================================
-
 SUPPORT_USERNAME = ""
 REQUIRED_CHANNEL = ""
 
-# ============================================================
-# آمار فعالیت
-# ============================================================
-
 user_stats = {}
-
 music_admins = set()
 music_owner_id = None
 
+
+# ============================================================
+# آمار
+# ============================================================
 
 def _get_user_stats(user_id):
     if user_id not in user_stats:
@@ -54,11 +49,15 @@ def _register_activity(message):
     if not message.from_user:
         return
 
-    stats = _get_user_stats(message.from_user.id)
+    stats = _get_user_stats(
+        message.from_user.id
+    )
 
     stats["messages"] += 1
-    stats["last_seen"] = datetime.now().strftime(
-        "%Y-%m-%d %H:%M:%S"
+    stats["last_seen"] = (
+        datetime.now().strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
     )
 
 
@@ -84,7 +83,7 @@ def _user_rank(user_id):
 
 
 # ============================================================
-# اتصال نمونه‌های اصلی
+# اتصال
 # ============================================================
 
 def set_bot_instances(
@@ -103,10 +102,10 @@ def set_bot_instances(
     player = player_instance
     shutdown_event = shutdown_event_instance
 
-    logger.info("Handlers received bot instance")
+    logger.info(
+        "Handlers received bot/player instances"
+    )
 
-    # مهم:
-    # ثبت واقعی Handlerها
     register_handlers()
 
     logger.info(
@@ -115,7 +114,7 @@ def set_bot_instances(
 
 
 # ============================================================
-# منوی اصلی
+# منوها
 # ============================================================
 
 def main_menu_keyboard():
@@ -225,35 +224,40 @@ def music_keyboard():
 
 
 # ============================================================
-# نوار پیشرفت
+# ابزار TrackInfo
 # ============================================================
 
-def progress_bar(current=0, duration=0, size=18):
-
-    if not duration or duration <= 0:
-        return "🔘━━━━━━━━━━━━━━━━━━"
-
-    current = max(0, min(current, duration))
-
-    position = int(
-        (current / duration) * size
-    )
-
-    position = max(
-        0,
-        min(position, size - 1)
-    )
-
-    return (
-        "━" * position
-        + "🔘"
-        + "━" * (size - position - 1)
-    )
-
-
-def player_text(track=None):
+def _track_artist(track):
 
     if not track:
+        return "Unknown"
+
+    return (
+        getattr(track, "artist", None)
+        or getattr(track, "performer", None)
+        or getattr(track, "uploader", None)
+        or "Unknown"
+    )
+
+
+def _track_title(track):
+
+    if not track:
+        return "موزیک"
+
+    return (
+        getattr(track, "title", None)
+        or "موزیک"
+    )
+
+
+def player_text(
+    track=None,
+    position=0,
+):
+
+    if not track:
+
         return (
             "╭───────────────╮\n"
             "     🎵 𝗦𝗜𝗟𝗘𝗡𝗧 𝗠𝗨𝗦𝗜𝗖\n"
@@ -262,20 +266,27 @@ def player_text(track=None):
             "🟢 ربات سایلنت همیشه آنلاین می‌باشد."
         )
 
-    duration = getattr(
-        track,
-        "duration",
-        0
-    ) or 0
+    duration = (
+        getattr(track, "duration", 0)
+        or 0
+    )
+
+    position = max(
+        0,
+        min(
+            int(position),
+            duration if duration else int(position)
+        )
+    )
 
     return (
         "╭───────────────╮\n"
         "     🎵 𝗦𝗜𝗟𝗘𝗡𝗧 𝗠𝗨𝗦𝗜𝗖\n"
         "╰───────────────╯\n\n"
-        f"🎵 {track.title}\n"
-        f"👤 {track.artist}\n\n"
-        f"🔘 {progress_bar(0, duration)}\n\n"
-        "▶️ در حال پخش\n\n"
+        f"🎵 {_track_title(track)}\n"
+        f"👤 {_track_artist(track)}\n\n"
+        f"▶️ زمان: {position}s"
+        f" / {duration}s\n\n"
         "🟢 ربات سایلنت همیشه آنلاین می‌باشد."
     )
 
@@ -299,7 +310,10 @@ def _get_reply_audio(message):
 
     if reply.document:
 
-        mime = reply.document.mime_type or ""
+        mime = (
+            reply.document.mime_type
+            or ""
+        )
 
         if mime.startswith("audio/"):
             return reply.document
@@ -326,10 +340,44 @@ def _audio_artist(media):
 
 
 # ============================================================
-# دانلود و پخش
+# وضعیت پلیر
 # ============================================================
 
-async def _download_and_play(message, track):
+async def _get_status(chat_id):
+
+    if not player:
+        return None
+
+    try:
+        return await player.get_status(
+            chat_id
+        )
+
+    except TypeError:
+
+        # سازگاری با نسخه‌های قدیمی
+        try:
+            return await player.get_status(
+                chat_id=chat_id
+            )
+        except Exception:
+            return None
+
+    except Exception:
+        logger.exception(
+            "GET STATUS ERROR"
+        )
+        return None
+
+
+# ============================================================
+# پخش / صف
+# ============================================================
+
+async def _download_and_play(
+    message,
+    track,
+):
 
     if player is None:
 
@@ -353,33 +401,42 @@ async def _download_and_play(message, track):
 
         return
 
-    await message.reply_text(
-        "⏳ در حال دانلود..."
-    )
-
     try:
 
-        filepath = await downloader.download(track)
+        await message.reply_text(
+            "⏳ در حال آماده‌سازی آهنگ..."
+        )
+
+        filepath = await downloader.prepare(
+            track
+        )
 
         if not filepath:
 
             await message.reply_text(
-                "❌ دانلود انجام نشد."
+                "❌ دانلود آهنگ انجام نشد."
             )
 
             return
 
         track.filepath = filepath
 
+        chat_id = message.chat.id
+
+        was_playing = (
+            player.get_current(chat_id)
+            is not None
+        )
+
         ok = await player.play(
-            message.chat.id,
+            chat_id,
             track
         )
 
         if not ok:
 
             await message.reply_text(
-                "❌ آهنگ دانلود شد ولی پخش نشد."
+                "❌ آهنگ پخش نشد."
             )
 
             return
@@ -392,8 +449,33 @@ async def _download_and_play(message, track):
 
             stats["plays"] += 1
 
+        # اگر آهنگ دیگری در حال پخش بوده،
+        # player.play آن را وارد صف کرده است.
+        if was_playing:
+
+            queue = player.get_queue(
+                chat_id
+            )
+
+            await message.reply_text(
+                "➕ آهنگ به صف اضافه شد.\n\n"
+                f"🎵 {_track_title(track)}\n"
+                f"👤 {_track_artist(track)}\n\n"
+                f"📋 جایگاه در صف: {len(queue)}\n\n"
+                "🎧 آهنگ فعلی بدون قطع شدن ادامه دارد."
+            )
+
+            return
+
+        position = await player.get_position(
+            chat_id
+        )
+
         await message.reply_text(
-            player_text(track),
+            player_text(
+                track,
+                position
+            ),
             reply_markup=music_keyboard()
         )
 
@@ -416,11 +498,11 @@ async def _download_and_play(message, track):
 async def _player_method(
     method_name,
     chat_id,
-    *args
+    *args,
 ):
 
     if player is None:
-        return False
+        return None
 
     method = getattr(
         player,
@@ -435,16 +517,14 @@ async def _player_method(
             method_name
         )
 
-        return False
+        return None
 
     try:
 
-        result = await method(
+        return await method(
             chat_id,
             *args
         )
-
-        return bool(result)
 
     except Exception:
 
@@ -453,7 +533,7 @@ async def _player_method(
             method_name
         )
 
-        return False
+        return None
 
 
 # ============================================================
@@ -471,15 +551,19 @@ def register_handlers():
         "REGISTERING TELEGRAM HANDLERS"
     )
 
+
     # ========================================================
-    # /start
+    # START
     # ========================================================
 
     @bot.on_message(
         filters.private
         & filters.command("start")
     )
-    async def start_command(client, message):
+    async def start_command(
+        client,
+        message
+    ):
 
         _register_activity(message)
 
@@ -505,7 +589,10 @@ def register_handlers():
             r"^\s*استارت\s*$"
         )
     )
-    async def start_farsi(client, message):
+    async def start_farsi(
+        client,
+        message
+    ):
 
         _register_activity(message)
 
@@ -529,7 +616,10 @@ def register_handlers():
             r"^\s*ربات\s*$"
         )
     )
-    async def bot_status(client, message):
+    async def bot_status(
+        client,
+        message
+    ):
 
         _register_activity(message)
 
@@ -548,7 +638,10 @@ def register_handlers():
             r"^\s*کمک\s*$"
         )
     )
-    async def help_handler(client, message):
+    async def help_handler(
+        client,
+        message
+    ):
 
         _register_activity(message)
 
@@ -563,6 +656,7 @@ def register_handlers():
             "⏹️ اتمام\n"
             "⏭️ بعدی\n"
             "⏮️ قبلی\n"
+            "📋 صف\n"
             "⏩ جلو 30\n"
             "⏪ عقب 30\n"
             "🔊 صدا 80\n\n"
@@ -591,34 +685,43 @@ def register_handlers():
             r"^\s*پخش(?:\s+(.+))?\s*$"
         )
     )
-    async def play_handler(client, message):
+    async def play_handler(
+        client,
+        message
+    ):
 
         _register_activity(message)
 
+        text = message.text or ""
+
         match = re.match(
             r"^\s*پخش(?:\s+(.+))?\s*$",
-            message.text or ""
+            text
         )
 
         query = ""
 
         if match and match.group(1):
-            query = match.group(1).strip()
+            query = (
+                match.group(1).strip()
+            )
+
 
         # ----------------------------------------------------
-        # ریپلای به فایل صوتی
+        # ریپلای فایل صوتی
         # ----------------------------------------------------
 
         if not query:
 
-            media = _get_reply_audio(message)
+            media = _get_reply_audio(
+                message
+            )
 
             if not media:
 
                 await message.reply_text(
                     "❌ برای پخش آهنگ:\n\n"
-                    "• نام آهنگ را بنویس:\n"
-                    "پخش اسم آهنگ\n\n"
+                    "• پخش اسم آهنگ\n\n"
                     "یا روی فایل صوتی ریپلای کن و بنویس:\n"
                     "پخش"
                 )
@@ -634,7 +737,7 @@ def register_handlers():
                 return
 
             await message.reply_text(
-                "⏳ در حال آماده‌سازی فایل..."
+                "⏳ در حال دریافت فایل..."
             )
 
             try:
@@ -642,7 +745,7 @@ def register_handlers():
                 downloads_dir = Path(
                     getattr(
                         player.downloader,
-                        "downloads_dir",
+                        "download_dir",
                         "downloads"
                     )
                 )
@@ -661,10 +764,18 @@ def register_handlers():
                     or f"audio_{message.id}.mp3"
                 )
 
-                filepath = await client.download_media(
-                    message.reply_to_message,
-                    file_name=str(
-                        downloads_dir / file_name
+                # حذف مسیرهای احتمالی از نام فایل
+                file_name = Path(
+                    file_name
+                ).name
+
+                filepath = (
+                    await client.download_media(
+                        message.reply_to_message,
+                        file_name=str(
+                            downloads_dir
+                            / file_name
+                        )
                     )
                 )
 
@@ -677,13 +788,29 @@ def register_handlers():
                     return
 
                 track = TrackInfo(
-                    title=_audio_title(media),
-                    performer=_audio_artist(media),
-                    filepath=filepath
+                    title=_audio_title(
+                        media
+                    ),
+                    performer=_audio_artist(
+                        media
+                    ),
+                    artist=_audio_artist(
+                        media
+                    ),
+                    filepath=filepath,
+                )
+
+                chat_id = message.chat.id
+
+                was_playing = (
+                    player.get_current(
+                        chat_id
+                    )
+                    is not None
                 )
 
                 ok = await player.play(
-                    message.chat.id,
+                    chat_id,
                     track
                 )
 
@@ -703,10 +830,35 @@ def register_handlers():
 
                     stats["plays"] += 1
 
-                await message.reply_text(
-                    player_text(track),
-                    reply_markup=music_keyboard()
-                )
+                if was_playing:
+
+                    queue = player.get_queue(
+                        chat_id
+                    )
+
+                    await message.reply_text(
+                        "➕ آهنگ به صف اضافه شد.\n\n"
+                        f"🎵 {_track_title(track)}\n"
+                        f"👤 {_track_artist(track)}\n\n"
+                        f"📋 جایگاه در صف: {len(queue)}\n\n"
+                        "🎧 آهنگ فعلی بدون قطع شدن ادامه دارد."
+                    )
+
+                else:
+
+                    position = (
+                        await player.get_position(
+                            chat_id
+                        )
+                    )
+
+                    await message.reply_text(
+                        player_text(
+                            track,
+                            position
+                        ),
+                        reply_markup=music_keyboard()
+                    )
 
             except Exception as e:
 
@@ -721,8 +873,9 @@ def register_handlers():
 
             return
 
+
         # ----------------------------------------------------
-        # جستجوی آهنگ
+        # جستجو
         # ----------------------------------------------------
 
         if player is None:
@@ -754,12 +907,12 @@ def register_handlers():
 
         try:
 
-            results = await downloader.search(
+            result = await downloader.search(
                 query,
                 limit=1
             )
 
-            if not results:
+            if not result:
 
                 await message.reply_text(
                     "❌ آهنگی پیدا نشد."
@@ -767,14 +920,8 @@ def register_handlers():
 
                 return
 
-            track = results[0]
-
-            await message.reply_text(
-                "🎵 آهنگ پیدا شد.\n\n"
-                f"🎼 {track.title}\n"
-                f"👤 {track.artist}\n\n"
-                "⬇️ در حال آماده‌سازی..."
-            )
+            # search فعلی یک TrackInfo برمی‌گرداند
+            track = result
 
             await _download_and_play(
                 message,
@@ -794,6 +941,88 @@ def register_handlers():
 
 
     # ========================================================
+    # صف
+    # ========================================================
+
+    @bot.on_message(
+        filters.text
+        & filters.regex(
+            r"^\s*صف\s*$"
+        )
+    )
+    async def queue_handler(
+        client,
+        message
+    ):
+
+        _register_activity(message)
+
+        if not player:
+
+            await message.reply_text(
+                "❌ پلیر آماده نیست."
+            )
+
+            return
+
+        chat_id = message.chat.id
+
+        current = player.get_current(
+            chat_id
+        )
+
+        queue = player.get_queue(
+            chat_id
+        )
+
+        lines = [
+            "📋 صف پخش 𝗦𝗜𝗟𝗘𝗡𝗧",
+            ""
+        ]
+
+        if current:
+
+            lines.extend(
+                [
+                    "▶️ در حال پخش:",
+                    f"🎵 {_track_title(current)}",
+                    f"👤 {_track_artist(current)}",
+                    ""
+                ]
+            )
+
+        if not queue:
+
+            lines.append(
+                "📭 صف خالی است."
+            )
+
+        else:
+
+            lines.append(
+                f"🎧 آهنگ‌های منتظر: {len(queue)}"
+            )
+            lines.append("")
+
+            for index, track in enumerate(
+                queue,
+                start=1
+            ):
+
+                lines.append(
+                    f"{index}. "
+                    f"{_track_title(track)}"
+                    f" — "
+                    f"{_track_artist(track)}"
+                )
+
+        await message.reply_text(
+            "\n".join(lines),
+            reply_markup=music_keyboard()
+        )
+
+
+    # ========================================================
     # مکث
     # ========================================================
 
@@ -803,7 +1032,10 @@ def register_handlers():
             r"^\s*مکث\s*$"
         )
     )
-    async def pause_handler(client, message):
+    async def pause_handler(
+        client,
+        message
+    ):
 
         _register_activity(message)
 
@@ -835,7 +1067,10 @@ def register_handlers():
             r"^\s*ادامه\s*$"
         )
     )
-    async def resume_handler(client, message):
+    async def resume_handler(
+        client,
+        message
+    ):
 
         _register_activity(message)
 
@@ -861,7 +1096,10 @@ def register_handlers():
             r"^\s*اتمام\s*$"
         )
     )
-    async def stop_handler(client, message):
+    async def stop_handler(
+        client,
+        message
+    ):
 
         _register_activity(message)
 
@@ -887,19 +1125,53 @@ def register_handlers():
             r"^\s*بعدی\s*$"
         )
     )
-    async def next_handler(client, message):
+    async def next_handler(
+        client,
+        message
+    ):
 
         _register_activity(message)
 
-        ok = await _player_method(
-            "next",
-            message.chat.id
+        if not player:
+
+            await message.reply_text(
+                "❌ پلیر آماده نیست."
+            )
+
+            return
+
+        chat_id = message.chat.id
+
+        queue = player.get_queue(
+            chat_id
         )
 
+        if not queue:
+
+            await message.reply_text(
+                "📭 آهنگ دیگری در صف نیست."
+            )
+
+            return
+
+        track = await _player_method(
+            "next",
+            chat_id
+        )
+
+        if not track:
+
+            await message.reply_text(
+                "❌ پخش آهنگ بعدی انجام نشد."
+            )
+
+            return
+
         await message.reply_text(
-            "⏭️ آهنگ بعدی."
-            if ok
-            else "❌ صف آهنگ هنوز فعال نشده."
+            "⏭️ آهنگ بعدی پخش شد.\n\n"
+            f"🎵 {_track_title(track)}\n"
+            f"👤 {_track_artist(track)}",
+            reply_markup=music_keyboard()
         )
 
 
@@ -913,19 +1185,31 @@ def register_handlers():
             r"^\s*قبلی\s*$"
         )
     )
-    async def previous_handler(client, message):
+    async def previous_handler(
+        client,
+        message
+    ):
 
         _register_activity(message)
 
-        ok = await _player_method(
+        track = await _player_method(
             "previous",
             message.chat.id
         )
 
+        if not track:
+
+            await message.reply_text(
+                "❌ آهنگ قبلی موجود نیست."
+            )
+
+            return
+
         await message.reply_text(
-            "⏮️ آهنگ قبلی."
-            if ok
-            else "❌ صف آهنگ هنوز فعال نشده."
+            "⏮️ آهنگ قبلی پخش شد.\n\n"
+            f"🎵 {_track_title(track)}\n"
+            f"👤 {_track_artist(track)}",
+            reply_markup=music_keyboard()
         )
 
 
@@ -939,7 +1223,10 @@ def register_handlers():
             r"^\s*جلو\s+(\d+)\s*$"
         )
     )
-    async def forward_handler(client, message):
+    async def forward_handler(
+        client,
+        message
+    ):
 
         _register_activity(message)
 
@@ -948,7 +1235,9 @@ def register_handlers():
             message.text or ""
         )
 
-        seconds = int(match.group(1))
+        seconds = int(
+            match.group(1)
+        )
 
         seconds = max(
             1,
@@ -964,7 +1253,7 @@ def register_handlers():
         await message.reply_text(
             f"⏩ {seconds} ثانیه جلو رفت."
             if ok
-            else "❌ جلو بردن هنوز فعال نشده."
+            else "❌ جلو بردن انجام نشد."
         )
 
 
@@ -978,7 +1267,10 @@ def register_handlers():
             r"^\s*عقب\s+(\d+)\s*$"
         )
     )
-    async def backward_handler(client, message):
+    async def backward_handler(
+        client,
+        message
+    ):
 
         _register_activity(message)
 
@@ -987,7 +1279,9 @@ def register_handlers():
             message.text or ""
         )
 
-        seconds = int(match.group(1))
+        seconds = int(
+            match.group(1)
+        )
 
         seconds = max(
             1,
@@ -1003,7 +1297,7 @@ def register_handlers():
         await message.reply_text(
             f"⏪ {seconds} ثانیه عقب رفت."
             if ok
-            else "❌ عقب بردن هنوز فعال نشده."
+            else "❌ عقب بردن انجام نشد."
         )
 
 
@@ -1017,7 +1311,10 @@ def register_handlers():
             r"^\s*صدا(?:\s+(\d{1,3}))?\s*$"
         )
     )
-    async def volume_handler(client, message):
+    async def volume_handler(
+        client,
+        message
+    ):
 
         _register_activity(message)
 
@@ -1029,7 +1326,9 @@ def register_handlers():
         volume = 100
 
         if match and match.group(1):
-            volume = int(match.group(1))
+            volume = int(
+                match.group(1)
+            )
 
         volume = max(
             0,
@@ -1059,7 +1358,10 @@ def register_handlers():
             r"^\s*آیدی\s*$"
         )
     )
-    async def id_handler(client, message):
+    async def id_handler(
+        client,
+        message
+    ):
 
         _register_activity(message)
 
@@ -1078,57 +1380,18 @@ def register_handlers():
             else "ندارد"
         )
 
-        status = "❌ خارج از ویس کال"
-
-        if player:
-
-            try:
-
-                if (
-                    player.current_chat_id
-                    == message.chat.id
-                ):
-                    status = "🎧 داخل ویس کال"
-
-            except Exception:
-                pass
-
-        text = (
+        await message.reply_text(
             "╭──── 👤 اطلاعات کاربر ────╮\n\n"
             f"📛 نام: {_user_name(user)}\n"
             f"🔗 یوزرنیم: {username}\n"
             f"🆔 آیدی عددی: {user.id}\n"
-            f"👑 مقام: {_user_rank(user.id)}\n"
-            f"🎧 وضعیت: {status}\n\n"
+            f"👑 مقام: {_user_rank(user.id)}\n\n"
             "📊 آمار فعالیت\n"
             f"💬 پیام‌ها: {stats['messages']}\n"
             f"🎵 پخش‌ها: {stats['plays']}\n"
             f"⏸️ مکث‌ها: {stats['pauses']}\n"
             f"🕐 آخرین فعالیت: "
-            f"{stats['last_seen'] or 'ثبت نشده'}\n\n"
-            "🟢 ربات سایلنت همیشه آنلاین می‌باشد."
-        )
-
-        try:
-
-            if user.photo:
-
-                await client.send_photo(
-                    message.chat.id,
-                    user.photo.big_file_id,
-                    caption=text
-                )
-
-                return
-
-        except Exception:
-
-            logger.exception(
-                "PROFILE PHOTO ERROR"
-            )
-
-        await message.reply_text(
-            text
+            f"{stats['last_seen'] or 'ثبت نشده'}"
         )
 
 
@@ -1142,47 +1405,81 @@ def register_handlers():
             r"^\s*وضعیت\s*$"
         )
     )
-    async def status_handler(client, message):
+    async def status_handler(
+        client,
+        message
+    ):
 
         _register_activity(message)
 
-        if player is None:
+        if not player:
 
             await message.reply_text(
-                "🔴 پلیر آماده نیست."
+                "❌ پلیر آماده نیست."
             )
 
             return
 
-        try:
+        chat_id = message.chat.id
 
-            status = player.get_status()
-
-        except Exception:
-
-            await message.reply_text(
-                "❌ دریافت وضعیت پلیر انجام نشد."
-            )
-
-            return
-
-        track = (
-            status.get("current_track")
-            or "هیچ آهنگی"
+        status = await _get_status(
+            chat_id
         )
 
-        state = (
-            "▶️ در حال پخش"
-            if status.get("is_playing")
-            else "⏸️ مکث/متوقف"
+        if not status:
+
+            await message.reply_text(
+                "❌ دریافت وضعیت انجام نشد."
+            )
+
+            return
+
+        track = status.get(
+            "track"
+        )
+
+        position = status.get(
+            "position",
+            0
+        )
+
+        volume = status.get(
+            "volume",
+            100
+        )
+
+        queue_size = status.get(
+            "queue_size",
+            0
+        )
+
+        if status.get("paused"):
+
+            state = "⏸️ مکث"
+
+        elif status.get("playing"):
+
+            state = "▶️ در حال پخش"
+
+        else:
+
+            state = "⏹️ متوقف"
+
+        text = (
+            "🎧 وضعیت موزیک\n\n"
+            f"🎵 آهنگ: "
+            f"{_track_title(track)}\n"
+            f"👤 خواننده: "
+            f"{_track_artist(track)}\n\n"
+            f"📡 وضعیت: {state}\n"
+            f"⏱️ زمان: {position} ثانیه\n"
+            f"🔊 صدا: {volume}%\n"
+            f"📋 صف: {queue_size} آهنگ\n\n"
+            "🟢 ربات سایلنت همیشه آنلاین می‌باشد."
         )
 
         await message.reply_text(
-            "🎧 وضعیت پلیر\n\n"
-            f"🎵 آهنگ: {track}\n"
-            f"📡 وضعیت: {state}\n"
-            f"🔊 صدا: {status.get('volume', 100)}%\n\n"
-            "🟢 ربات سایلنت همیشه آنلاین می‌باشد.",
+            text,
             reply_markup=music_keyboard()
         )
 
@@ -1197,7 +1494,10 @@ def register_handlers():
             r"^\s*ترفیع موزیک\s*$"
         )
     )
-    async def promote_handler(client, message):
+    async def promote_handler(
+        client,
+        message
+    ):
 
         _register_activity(message)
 
@@ -1209,12 +1509,18 @@ def register_handlers():
 
             return
 
-        user = message.reply_to_message.from_user
+        user = (
+            message
+            .reply_to_message
+            .from_user
+        )
 
         if not user:
             return
 
-        music_admins.add(user.id)
+        music_admins.add(
+            user.id
+        )
 
         await message.reply_text(
             f"👑 {_user_name(user)}\n\n"
@@ -1232,7 +1538,10 @@ def register_handlers():
             r"^\s*عزل موزیک\s*$"
         )
     )
-    async def demote_handler(client, message):
+    async def demote_handler(
+        client,
+        message
+    ):
 
         _register_activity(message)
 
@@ -1244,12 +1553,18 @@ def register_handlers():
 
             return
 
-        user = message.reply_to_message.from_user
+        user = (
+            message
+            .reply_to_message
+            .from_user
+        )
 
         if not user:
             return
 
-        music_admins.discard(user.id)
+        music_admins.discard(
+            user.id
+        )
 
         await message.reply_text(
             f"👤 {_user_name(user)}\n\n"
@@ -1267,7 +1582,10 @@ def register_handlers():
             r"^\s*مالک موزیک\s*$"
         )
     )
-    async def owner_handler(client, message):
+    async def owner_handler(
+        client,
+        message
+    ):
 
         global music_owner_id
 
@@ -1281,7 +1599,11 @@ def register_handlers():
 
             return
 
-        user = message.reply_to_message.from_user
+        user = (
+            message
+            .reply_to_message
+            .from_user
+        )
 
         if not user:
             return
@@ -1304,7 +1626,10 @@ def register_handlers():
             r"^\s*شروع کال\s*$"
         )
     )
-    async def start_call_handler(client, message):
+    async def start_call_handler(
+        client,
+        message
+    ):
 
         _register_activity(message)
 
@@ -1330,7 +1655,10 @@ def register_handlers():
             r"^\s*پایان کال\s*$"
         )
     )
-    async def end_call_handler(client, message):
+    async def end_call_handler(
+        client,
+        message
+    ):
 
         _register_activity(message)
 
@@ -1363,7 +1691,10 @@ def register_handlers():
             r"^\s*کامنت کال فعال\s*$"
         )
     )
-    async def comments_on(client, message):
+    async def comments_on(
+        client,
+        message
+    ):
 
         _register_activity(message)
 
@@ -1389,7 +1720,10 @@ def register_handlers():
             r"^\s*کامنت کال غیر فعال\s*$"
         )
     )
-    async def comments_off(client, message):
+    async def comments_off(
+        client,
+        message
+    ):
 
         _register_activity(message)
 
@@ -1414,7 +1748,10 @@ def register_handlers():
             r"^music_.+"
         )
     )
-    async def music_callbacks(client, callback):
+    async def music_callbacks(
+        client,
+        callback
+    ):
 
         data = callback.data
         chat_id = callback.message.chat.id
@@ -1434,7 +1771,6 @@ def register_handlers():
                 else "❌ مکث انجام نشد."
             )
 
-
         elif data == "music_resume":
 
             ok = await _player_method(
@@ -1447,7 +1783,6 @@ def register_handlers():
                 if ok
                 else "❌ ادامه انجام نشد."
             )
-
 
         elif data == "music_stop":
 
@@ -1462,34 +1797,39 @@ def register_handlers():
                 else "❌ توقف انجام نشد."
             )
 
-
         elif data == "music_next":
 
-            ok = await _player_method(
+            track = await _player_method(
                 "next",
                 chat_id
             )
 
-            await callback.message.reply_text(
-                "⏭️ آهنگ بعدی."
-                if ok
-                else "❌ صف بعدی هنوز فعال نیست."
-            )
+            if track:
 
+                await callback.message.reply_text(
+                    "⏭️ آهنگ بعدی پخش شد.\n\n"
+                    f"🎵 {_track_title(track)}\n"
+                    f"👤 {_track_artist(track)}"
+                )
+
+            else:
+
+                await callback.message.reply_text(
+                    "📭 آهنگ دیگری در صف نیست."
+                )
 
         elif data == "music_previous":
 
-            ok = await _player_method(
+            track = await _player_method(
                 "previous",
                 chat_id
             )
 
             await callback.message.reply_text(
-                "⏮️ آهنگ قبلی."
-                if ok
-                else "❌ صف قبلی هنوز فعال نیست."
+                "⏮️ آهنگ قبلی پخش شد."
+                if track
+                else "❌ آهنگ قبلی موجود نیست."
             )
-
 
         elif data == "music_forward_10":
 
@@ -1505,7 +1845,6 @@ def register_handlers():
                 else "❌ جلو بردن فعال نیست."
             )
 
-
         elif data == "music_backward_10":
 
             ok = await _player_method(
@@ -1519,7 +1858,6 @@ def register_handlers():
                 if ok
                 else "❌ عقب بردن فعال نیست."
             )
-
 
         elif data == "music_forward_30":
 
@@ -1535,7 +1873,6 @@ def register_handlers():
                 else "❌ جلو بردن فعال نیست."
             )
 
-
         elif data == "music_backward_30":
 
             ok = await _player_method(
@@ -1550,20 +1887,17 @@ def register_handlers():
                 else "❌ عقب بردن فعال نیست."
             )
 
-
         elif data == "music_volume":
 
-            current = 100
+            status = await _get_status(
+                chat_id
+            )
 
-            try:
-
-                current = player.get_status().get(
-                    "volume",
-                    100
-                )
-
-            except Exception:
-                pass
+            current = (
+                status.get("volume", 100)
+                if status
+                else 100
+            )
 
             await callback.message.reply_text(
                 f"🔊 صدای فعلی: {current}%\n\n"
@@ -1571,38 +1905,42 @@ def register_handlers():
                 "صدا 80"
             )
 
-
         elif data == "music_status":
 
-            try:
+            status = await _get_status(
+                chat_id
+            )
 
-                status = player.get_status()
-
-                track = (
-                    status.get("current_track")
-                    or "هیچ آهنگی"
-                )
-
-                state = (
-                    "▶️ در حال پخش"
-                    if status.get("is_playing")
-                    else "⏸️ مکث/متوقف"
-                )
-
-                await callback.message.reply_text(
-                    "🎧 وضعیت موزیک\n\n"
-                    f"🎵 {track}\n"
-                    f"📡 {state}\n"
-                    f"🔊 {status.get('volume', 100)}%\n\n"
-                    "🟢 ربات سایلنت همیشه آنلاین می‌باشد.",
-                    reply_markup=music_keyboard()
-                )
-
-            except Exception:
+            if not status:
 
                 await callback.message.reply_text(
                     "❌ دریافت وضعیت انجام نشد."
                 )
+
+                return
+
+            track = status.get(
+                "track"
+            )
+
+            state = (
+                "⏸️ مکث"
+                if status.get("paused")
+                else "▶️ در حال پخش"
+                if status.get("playing")
+                else "⏹️ متوقف"
+            )
+
+            await callback.message.reply_text(
+                "🎧 وضعیت موزیک\n\n"
+                f"🎵 {_track_title(track)}\n"
+                f"👤 {_track_artist(track)}\n"
+                f"📡 {state}\n"
+                f"🔊 {status.get('volume', 100)}%\n"
+                f"📋 صف: {status.get('queue_size', 0)}\n\n"
+                "🟢 ربات سایلنت همیشه آنلاین می‌باشد.",
+                reply_markup=music_keyboard()
+            )
 
 
     # ========================================================
@@ -1614,15 +1952,14 @@ def register_handlers():
             r"^menu_.+|^main_menu$"
         )
     )
-    async def menu_callbacks(client, callback):
+    async def menu_callbacks(
+        client,
+        callback
+    ):
 
         data = callback.data
 
         await callback.answer()
-
-        # ----------------------------------------------------
-        # منوی اصلی
-        # ----------------------------------------------------
 
         if data == "main_menu":
 
@@ -1635,10 +1972,6 @@ def register_handlers():
             return
 
 
-        # ----------------------------------------------------
-        # موزیک
-        # ----------------------------------------------------
-
         if data == "menu_music":
 
             await callback.message.edit_text(
@@ -1646,65 +1979,55 @@ def register_handlers():
                 "برای پخش بنویس:\n"
                 "پخش نام آهنگ\n\n"
                 "یا روی فایل صوتی ریپلای کن و بنویس:\n"
-                "پخش",
+                "پخش\n\n"
+                "برای دیدن صف:\n"
+                "صف",
                 reply_markup=music_keyboard()
             )
 
             return
 
 
-        # ----------------------------------------------------
-        # وضعیت
-        # ----------------------------------------------------
-
         if data == "menu_status":
 
-            if not player:
+            status = await _get_status(
+                callback.message.chat.id
+            )
 
-                await callback.message.edit_text(
-                    "🔴 پلیر آماده نیست.",
-                    reply_markup=main_menu_keyboard()
-                )
-
-                return
-
-            try:
-
-                status = player.get_status()
-
-                track = (
-                    status.get("current_track")
-                    or "هیچ آهنگی"
-                )
-
-                state = (
-                    "▶️ در حال پخش"
-                    if status.get("is_playing")
-                    else "⏸️ مکث/متوقف"
-                )
-
-                await callback.message.edit_text(
-                    "🎧 وضعیت موزیک\n\n"
-                    f"🎵 آهنگ: {track}\n"
-                    f"📡 وضعیت: {state}\n"
-                    f"🔊 صدا: {status.get('volume', 100)}%\n\n"
-                    "🟢 ربات سایلنت همیشه آنلاین می‌باشد.",
-                    reply_markup=music_keyboard()
-                )
-
-            except Exception:
+            if not status:
 
                 await callback.message.edit_text(
                     "❌ دریافت وضعیت انجام نشد.",
                     reply_markup=main_menu_keyboard()
                 )
 
+                return
+
+            track = status.get(
+                "track"
+            )
+
+            state = (
+                "⏸️ مکث"
+                if status.get("paused")
+                else "▶️ در حال پخش"
+                if status.get("playing")
+                else "⏹️ متوقف"
+            )
+
+            await callback.message.edit_text(
+                "🎧 وضعیت موزیک\n\n"
+                f"🎵 {_track_title(track)}\n"
+                f"👤 {_track_artist(track)}\n"
+                f"📡 {state}\n"
+                f"🔊 {status.get('volume', 100)}%\n"
+                f"📋 صف: {status.get('queue_size', 0)}\n\n"
+                "🟢 ربات سایلنت همیشه آنلاین می‌باشد.",
+                reply_markup=music_keyboard()
+            )
+
             return
 
-
-        # ----------------------------------------------------
-        # آیدی
-        # ----------------------------------------------------
 
         if data == "menu_id":
 
@@ -1736,10 +2059,6 @@ def register_handlers():
             return
 
 
-        # ----------------------------------------------------
-        # آمار
-        # ----------------------------------------------------
-
         if data == "menu_stats":
 
             user = callback.from_user
@@ -1760,10 +2079,6 @@ def register_handlers():
             return
 
 
-        # ----------------------------------------------------
-        # عضویت اجباری
-        # ----------------------------------------------------
-
         if data == "menu_force":
 
             await callback.message.reply_text(
@@ -1773,10 +2088,6 @@ def register_handlers():
 
             return
 
-
-        # ----------------------------------------------------
-        # پشتیبانی
-        # ----------------------------------------------------
 
         if data == "menu_support":
 
