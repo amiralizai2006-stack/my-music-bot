@@ -17,12 +17,21 @@ logger = logging.getLogger(__name__)
 class TrackInfo:
     title: str
     performer: str = ""
+    artist: str = ""
     duration: int = 0
     url: str = ""
     webpage_url: str = ""
     thumbnail: str = ""
     uploader: str = ""
     filepath: Optional[str] = None
+
+    def __post_init__(self):
+        # سازگاری بین artist و performer
+        if not self.performer and self.artist:
+            self.performer = self.artist
+
+        if not self.artist and self.performer:
+            self.artist = self.performer
 
 
 class MusicDownloader:
@@ -35,6 +44,7 @@ class MusicDownloader:
         query: str,
         limit: int = 1,
     ) -> Optional[TrackInfo]:
+
         try:
             import yt_dlp
 
@@ -46,7 +56,9 @@ class MusicDownloader:
             if query.startswith(("http://", "https://")):
                 search_query = query
             else:
-                search_query = f"ytsearch{max(1, int(limit))}:{query}"
+                search_query = (
+                    f"ytsearch{max(1, int(limit))}:{query}"
+                )
 
             options = {
                 "quiet": True,
@@ -81,8 +93,9 @@ class MusicDownloader:
 
             title = info.get("title") or "موزیک"
 
-            performer = (
+            artist = (
                 info.get("artist")
+                or info.get("creator")
                 or info.get("uploader")
                 or info.get("channel")
                 or ""
@@ -90,24 +103,36 @@ class MusicDownloader:
 
             return TrackInfo(
                 title=title,
-                performer=performer,
-                duration=int(info.get("duration") or 0),
+                performer=artist,
+                artist=artist,
+                duration=int(
+                    info.get("duration") or 0
+                ),
                 url=info.get("url") or "",
-                webpage_url=info.get("webpage_url") or "",
-                thumbnail=info.get("thumbnail") or "",
-                uploader=info.get("uploader")
-                or info.get("channel")
-                or "",
+                webpage_url=(
+                    info.get("webpage_url") or ""
+                ),
+                thumbnail=(
+                    info.get("thumbnail") or ""
+                ),
+                uploader=(
+                    info.get("uploader")
+                    or info.get("channel")
+                    or ""
+                ),
             )
 
         except Exception:
-            logger.exception("Music search failed")
+            logger.exception(
+                "Music search failed"
+            )
             return None
 
     async def download(
         self,
         track: TrackInfo,
     ) -> Optional[str]:
+
         try:
             import yt_dlp
 
@@ -119,7 +144,10 @@ class MusicDownloader:
             if not source:
                 return None
 
-            output = self.download_dir / "%(id)s.%(ext)s"
+            output = (
+                self.download_dir
+                / "%(id)s.%(ext)s"
+            )
 
             options = {
                 "format": "bestaudio/best",
@@ -151,6 +179,7 @@ class MusicDownloader:
             video_id = info.get("id")
 
             if video_id:
+
                 mp3_file = (
                     self.download_dir
                     / f"{video_id}.mp3"
@@ -168,13 +197,16 @@ class MusicDownloader:
             return None
 
         except Exception:
-            logger.exception("Music download failed")
+            logger.exception(
+                "Music download failed"
+            )
             return None
 
     async def prepare(
         self,
         track: TrackInfo,
     ) -> Optional[str]:
+
         if (
             track.filepath
             and os.path.exists(track.filepath)
@@ -185,30 +217,68 @@ class MusicDownloader:
 
 
 class MusicPlayer:
+
     def __init__(
         self,
         pytgcalls: Any = None,
     ):
         self.pytgcalls = pytgcalls
+
         self.downloader = MusicDownloader()
 
-        self.queues: dict[int, list[TrackInfo]] = {}
-        self.current: dict[int, TrackInfo] = {}
+        # صف هر چت
+        self.queues: dict[
+            int,
+            list[TrackInfo]
+        ] = {}
 
-        self.started_at: dict[int, float] = {}
-        self.paused_at: dict[int, float] = {}
+        # آهنگ فعلی
+        self.current: dict[
+            int,
+            TrackInfo
+        ] = {}
+
+        self.started_at: dict[
+            int,
+            float
+        ] = {}
+
+        self.paused_at: dict[
+            int,
+            float
+        ] = {}
+
         self.paused: set[int] = set()
 
-        self.volumes: dict[int, int] = {}
+        self.volumes: dict[
+            int,
+            int
+        ] = {}
 
-        self.history: dict[int, list[TrackInfo]] = {}
-        self.history_index: dict[int, int] = {}
+        self.history: dict[
+            int,
+            list[TrackInfo]
+        ] = {}
 
-        self.locks: dict[int, asyncio.Lock] = {}
+        self.history_index: dict[
+            int,
+            int
+        ] = {}
 
-    def _lock(self, chat_id: int) -> asyncio.Lock:
+        self.locks: dict[
+            int,
+            asyncio.Lock
+        ] = {}
+
+    def _lock(
+        self,
+        chat_id: int,
+    ) -> asyncio.Lock:
+
         if chat_id not in self.locks:
-            self.locks[chat_id] = asyncio.Lock()
+            self.locks[chat_id] = (
+                asyncio.Lock()
+            )
 
         return self.locks[chat_id]
 
@@ -218,6 +288,7 @@ class MusicPlayer:
         *args,
         **kwargs,
     ):
+
         if not self.pytgcalls:
             raise RuntimeError(
                 "PyTgCalls is not available"
@@ -234,14 +305,19 @@ class MusicPlayer:
                 f"PyTgCalls method not found: {method}"
             )
 
-        return await fn(*args, **kwargs)
+        return await fn(
+            *args,
+            **kwargs,
+        )
 
     async def _make_stream(
         self,
         filepath: str,
     ):
+
         try:
             return MediaStream(filepath)
+
         except TypeError:
             return MediaStream(
                 filepath=filepath
@@ -253,9 +329,11 @@ class MusicPlayer:
         title: str = "موزیک",
         performer: str = "",
     ) -> TrackInfo:
+
         return TrackInfo(
             title=title,
             performer=performer,
+            artist=performer,
             filepath=filepath,
         )
 
@@ -268,6 +346,7 @@ class MusicPlayer:
         async with self._lock(chat_id):
 
             try:
+
                 filepath = (
                     await self.downloader.prepare(
                         track
@@ -286,8 +365,6 @@ class MusicPlayer:
                     filepath
                 )
 
-                # موفقیت PyTgCalls را فقط با exception
-                # بررسی می‌کنیم؛ None لزوماً خطا نیست.
                 await self.call_method(
                     "play",
                     chat_id,
@@ -305,7 +382,9 @@ class MusicPlayer:
                     None,
                 )
 
-                self.paused.discard(chat_id)
+                self.paused.discard(
+                    chat_id
+                )
 
                 self.volumes.setdefault(
                     chat_id,
@@ -317,10 +396,12 @@ class MusicPlayer:
                     [],
                 )
 
-                if (
-                    not history
-                    or history[-1].webpage_url
+                # جلوگیری از ثبت تکراری
+                # ولی اجازه می‌دهیم آهنگ بعدی دوباره پخش شود
+                if not history or (
+                    history[-1].webpage_url
                     != track.webpage_url
+                    or not track.webpage_url
                 ):
                     history.append(track)
 
@@ -328,9 +409,17 @@ class MusicPlayer:
                     len(history) - 1
                 )
 
+                logger.info(
+                    "▶️ Playing: %s - %s",
+                    track.artist
+                    or track.performer,
+                    track.title,
+                )
+
                 return True
 
             except Exception:
+
                 logger.exception(
                     "Failed to play track in chat %s",
                     chat_id,
@@ -343,6 +432,25 @@ class MusicPlayer:
         chat_id: int,
         track: TrackInfo,
     ) -> bool:
+
+        # اگر آهنگی در حال پخش است،
+        # آهنگ جدید باید برود داخل صف
+        if chat_id in self.current:
+
+            await self.add_to_queue(
+                chat_id,
+                track,
+            )
+
+            logger.info(
+                "➕ Added to queue: %s",
+                track.title,
+            )
+
+            return True
+
+        # اگر چیزی پخش نمی‌شود،
+        # مستقیم پخش کن
         return await self.play_track(
             chat_id,
             track,
@@ -354,12 +462,15 @@ class MusicPlayer:
     ) -> bool:
 
         try:
+
             await self.call_method(
                 "pause",
                 chat_id,
             )
 
-            self.paused.add(chat_id)
+            self.paused.add(
+                chat_id
+            )
 
             self.paused_at[chat_id] = (
                 time.time()
@@ -368,9 +479,11 @@ class MusicPlayer:
             return True
 
         except Exception:
+
             logger.exception(
                 "Pause failed"
             )
+
             return False
 
     async def resume(
@@ -379,16 +492,21 @@ class MusicPlayer:
     ) -> bool:
 
         try:
+
             await self.call_method(
                 "resume",
                 chat_id,
             )
 
-            self.paused.discard(chat_id)
+            self.paused.discard(
+                chat_id
+            )
 
-            paused_time = self.paused_at.pop(
-                chat_id,
-                None,
+            paused_time = (
+                self.paused_at.pop(
+                    chat_id,
+                    None,
+                )
             )
 
             if (
@@ -403,9 +521,11 @@ class MusicPlayer:
             return True
 
         except Exception:
+
             logger.exception(
                 "Resume failed"
             )
+
             return False
 
     async def stop(
@@ -414,22 +534,29 @@ class MusicPlayer:
     ) -> bool:
 
         try:
+
             try:
                 await self.call_method(
                     "leave_call",
                     chat_id,
                 )
+
             except Exception:
-                await self.call_method(
-                    "stop",
-                    chat_id,
-                )
+
+                try:
+                    await self.call_method(
+                        "stop",
+                        chat_id,
+                    )
+                except Exception:
+                    pass
 
             self.current.pop(
                 chat_id,
                 None,
             )
 
+            # با اتمام، صف هم پاک شود
             self.queues.pop(
                 chat_id,
                 None,
@@ -445,14 +572,18 @@ class MusicPlayer:
                 None,
             )
 
-            self.paused.discard(chat_id)
+            self.paused.discard(
+                chat_id
+            )
 
             return True
 
         except Exception:
+
             logger.exception(
                 "Stop failed"
             )
+
             return False
 
     async def next(
@@ -468,8 +599,17 @@ class MusicPlayer:
         if not queue:
             return None
 
+        # آهنگ اول صف را بردار
         track = queue.pop(0)
 
+        # اگر صف خالی شد، دیکشنری را تمیز کن
+        if not queue:
+            self.queues.pop(
+                chat_id,
+                None,
+            )
+
+        # آهنگ قبلی را جایگزین کن
         if await self.play_track(
             chat_id,
             track,
@@ -501,7 +641,9 @@ class MusicPlayer:
 
         index -= 1
 
-        self.history_index[chat_id] = index
+        self.history_index[chat_id] = (
+            index
+        )
 
         track = history[index]
 
@@ -517,16 +659,22 @@ class MusicPlayer:
         self,
         chat_id: int,
         track: TrackInfo,
-    ):
-        self.queues.setdefault(
+    ) -> int:
+
+        queue = self.queues.setdefault(
             chat_id,
             [],
-        ).append(track)
+        )
+
+        queue.append(track)
+
+        return len(queue)
 
     async def clear_queue(
         self,
         chat_id: int,
     ):
+
         self.queues.pop(
             chat_id,
             None,
@@ -540,10 +688,14 @@ class MusicPlayer:
 
         volume = max(
             0,
-            min(200, int(volume)),
+            min(
+                200,
+                int(volume),
+            ),
         )
 
         try:
+
             await self.call_method(
                 "change_volume",
                 chat_id,
@@ -555,6 +707,7 @@ class MusicPlayer:
             return True
 
         except Exception:
+
             logger.exception(
                 "Volume change failed"
             )
@@ -576,11 +729,14 @@ class MusicPlayer:
             )
 
             if paused_at:
+
                 return max(
                     0,
                     int(
                         paused_at
-                        - self.started_at[chat_id]
+                        - self.started_at[
+                            chat_id
+                        ]
                     ),
                 )
 
@@ -588,7 +744,9 @@ class MusicPlayer:
             0,
             int(
                 time.time()
-                - self.started_at[chat_id]
+                - self.started_at[
+                    chat_id
+                ]
             ),
         )
 
@@ -599,6 +757,7 @@ class MusicPlayer:
     ) -> bool:
 
         try:
+
             await self.call_method(
                 "seek",
                 chat_id,
@@ -608,6 +767,7 @@ class MusicPlayer:
             return True
 
         except Exception:
+
             logger.warning(
                 "Seek is not supported"
             )
@@ -684,6 +844,7 @@ class MusicPlayer:
         self,
         chat_id: int,
     ) -> Optional[TrackInfo]:
+
         return self.current.get(
             chat_id
         )
@@ -692,14 +853,21 @@ class MusicPlayer:
         self,
         chat_id: int,
     ) -> list[TrackInfo]:
+
         return self.queues.get(
             chat_id,
             [],
         )
 
     async def cleanup_files(self):
+
         try:
-            for file in self.downloader.download_dir.iterdir():
+
+            for file in (
+                self.downloader
+                .download_dir
+                .iterdir()
+            ):
 
                 if file.is_file():
 
@@ -707,12 +875,14 @@ class MusicPlayer:
                         file.unlink()
 
                     except Exception:
+
                         logger.warning(
                             "Could not remove %s",
                             file,
                         )
 
         except Exception:
+
             logger.exception(
                 "Cleanup failed"
             )
@@ -721,6 +891,7 @@ class MusicPlayer:
         self,
         chat_id: int,
     ):
+
         self.queues.pop(
             chat_id,
             None,
@@ -762,5 +933,5 @@ class MusicPlayer:
 
         self.locks.pop(
             chat_id,
-            None,
+            None
         )
